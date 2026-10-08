@@ -5,12 +5,26 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:android": "vite --mode android",
     "build": "tsc --noEmit && vite build",
+    "build:dummy": "tsc --noEmit && vite build --mode dummy",
+    "build:crazygames": "tsc --noEmit && vite build --mode crazygames",
+    "build:playgama": "tsc --noEmit && vite build --mode playgama",
+    "build:itch": "tsc --noEmit && vite build --mode itch",
+    "build:android": "tsc --noEmit && vite build --mode android",
+    "check:imports": "node scripts/check-imports.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@capacitor-community/admob": "^8.2.1",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.2",
+    "@capacitor/status-bar": "^8.0.4",
     "three": "^0.186.1"
   },
   "devDependencies": {

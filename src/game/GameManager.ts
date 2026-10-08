@@ -22,19 +22,9 @@ import { FAR, NEAR, PLAYER, SIM } from '../utils/Constants';
 import { aimToWorld, Rng } from '../utils/MathUtils';
 import { GameStateId, GameStateMachine } from './GameState';
 import { RallyManager } from './RallyManager';
+import { platform } from '../platforms';
 
 const POINT_PAUSE = 1.9;
-const TARGET_KEY = 'pickle-smash.target';
-
-function loadTarget(): MatchTarget {
-  try {
-    const v = Number(localStorage.getItem(TARGET_KEY));
-    if ((MATCH_TARGETS as readonly number[]).includes(v)) return v as MatchTarget;
-  } catch {
-    // storage blocked (private mode / iframe) — fall back to the default
-  }
-  return 11;
-}
 
 /**
  * Composition root and main loop. Wires simulation (RallyManager), presentation (views, camera,
@@ -65,7 +55,8 @@ export class GameManager {
   private pointTimer = 0;
   private landing: { x: number; z: number } | null = null;
   private tally = { hero: 0, rival: 0 };
-  private target: MatchTarget = loadTarget();
+  private target: MatchTarget = 11;
+  private stats = { matchesPlayed: 0, matchesWon: 0, bestRally: 0 };
   private nextServer!: Athlete;
   private nextFromRight = true;
   private debug = false;
@@ -104,9 +95,10 @@ export class GameManager {
 
     this.hud = new HUD(uiRoot, 'You', 'CPU');
     this.overlays = this.buildOverlays();
-    this.setTarget(this.target);
+    this.setTarget(this.target, false);
     this.bindRallyEvents();
     this.bindGlobalInput();
+    this.bindPlatformEvents();
     this.fsm.onChange((to) => this.onStateChange(to));
 
     // Show the court behind the title screen.
@@ -114,6 +106,22 @@ export class GameManager {
     this.rally.startServe(this.hero, true);
     this.cameraRig.snap(this.cameraFocus());
     onProgress(1);
+  }
+
+  async init(): Promise<void> {
+    try {
+      const saved = await platform.loadProgress();
+      if (saved) {
+        if (saved.target && (MATCH_TARGETS as readonly number[]).includes(saved.target as MatchTarget)) {
+          this.setTarget(saved.target as MatchTarget, false);
+        }
+        if (saved.matchesPlayed !== undefined) this.stats.matchesPlayed = saved.matchesPlayed;
+        if (saved.matchesWon !== undefined) this.stats.matchesWon = saved.matchesWon;
+        if (saved.bestRally !== undefined) this.stats.bestRally = saved.bestRally;
+      }
+    } catch (err) {
+      console.warn('[GameManager] Failed to load progress from platform:', err);
+    }
   }
 
   /** Simple difficulty switch (full menu flow arrives in Phase 5). */
@@ -187,6 +195,7 @@ export class GameManager {
     this.fsm.go(GameStateId.SERVING);
     this.hud.setScores(this.tally.hero, this.tally.rival, this.nextServer === this.hero);
     this.hud.setRally(0);
+    platform.onGameplayStart();
   }
 
   private afterPoint(): void {
@@ -204,6 +213,16 @@ export class GameManager {
     this.hud.setHint('');
     this.audio.play(heroWon ? 'pointWon' : 'pointLost');
     this.fsm.go(GameStateId.MATCH_OVER);
+
+    platform.onGameplayStop();
+    void platform.submitScore(this.tally.hero);
+    this.stats.matchesPlayed = (this.stats.matchesPlayed ?? 0) + 1;
+    if (heroWon) this.stats.matchesWon = (this.stats.matchesWon ?? 0) + 1;
+    void platform.saveProgress(this.stats);
+
+    if (platform.capabilities.ads) {
+      void platform.showInterstitialAd();
+    }
   }
 
   private newMatch(): void {
@@ -215,18 +234,17 @@ export class GameManager {
   }
 
   private goToMenu(): void {
+    platform.onGameplayStop();
     this.fsm.go(GameStateId.MAIN_MENU);
     this.ballView.resetTrail();
     this.landing = null;
     this.rally.startServe(this.hero, true);
   }
 
-  private setTarget(t: MatchTarget): void {
+  private setTarget(t: MatchTarget, persist = true): void {
     this.target = t;
-    try {
-      localStorage.setItem(TARGET_KEY, String(t));
-    } catch {
-      // ignore — the choice just won't be remembered
+    if (persist) {
+      void platform.saveProgress({ target: t });
     }
     for (const b of this.overlays.title.querySelectorAll<HTMLElement>('[data-target]')) {
       b.classList.toggle('selected', Number(b.dataset.target) === t);
@@ -291,6 +309,9 @@ export class GameManager {
       const intensity = Math.min(1, e.speed / 22);
       this.audio.play(e.kind === 'serve' ? 'serve' : intensity > 0.75 ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan);
       if (intensity > 0.8) this.cameraRig.impulse(0.35);
+      if (e.athlete === this.hero && platform.capabilities.haptics) {
+        platform.vibrate?.(intensity > 0.75 ? 35 : 15);
+      }
       this.ballView.resetTrail();
       if (this.fsm.state === GameStateId.SERVING) this.fsm.go(GameStateId.RALLY);
       this.hud.setRally(e.shotIndex);
@@ -307,7 +328,10 @@ export class GameManager {
       this.landing = null;
     });
     bus.on('net', (e) => this.audio.play('net', 0.6, e.pos.x / 6));
-    bus.on('rallyEnd', (e) => this.onRallyEnd(e.outcome, e.shots));
+    bus.on('rallyEnd', (e) => {
+      this.stats.bestRally = Math.max(this.stats.bestRally, e.shots);
+      this.onRallyEnd(e.outcome, e.shots);
+    });
   }
 
   private bindGlobalInput(): void {
@@ -327,8 +351,31 @@ export class GameManager {
       }
     });
     this.hud.pauseButton.addEventListener('click', () => this.togglePause());
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.fsm.pause();
+  }
+
+  private bindPlatformEvents(): void {
+    platform.onPause(() => {
+      if (!this.fsm.isPaused) this.fsm.pause();
+    });
+    platform.onResume(() => {
+      // Game remains paused when returning from background so user can resume when ready
+    });
+    platform.onBackButton?.(() => {
+      if (this.fsm.state === GameStateId.SERVING || this.fsm.state === GameStateId.RALLY) {
+        this.togglePause();
+      } else if (this.fsm.state === GameStateId.PAUSED) {
+        this.goToMenu();
+      } else if (this.fsm.state === GameStateId.MATCH_OVER) {
+        this.goToMenu();
+      }
+    });
+    platform.onAdStateChange?.((active) => {
+      if (active) {
+        this.audio.setMuted(true);
+        if (!this.fsm.isPaused) this.fsm.pause();
+      } else {
+        this.audio.setMuted(false);
+      }
     });
   }
 
@@ -336,8 +383,10 @@ export class GameManager {
     if (this.fsm.isPaused) {
       this.fsm.resume();
       this.lastFrame = performance.now();
+      platform.onGameplayStart();
     } else {
       this.fsm.pause();
+      platform.onGameplayStop();
     }
     this.audio.play('click');
   }

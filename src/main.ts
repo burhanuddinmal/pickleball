@@ -1,14 +1,25 @@
 import './ui/styles.css';
 import { GameManager } from './game/GameManager';
+import { initPlatform } from './platforms';
 
-function boot(): void {
+async function boot(): Promise<void> {
   const bar = document.getElementById('loading-bar')!;
   const loading = document.getElementById('loading')!;
   const setProgress = (p: number) => (bar.style.width = `${Math.round(p * 100)}%`);
 
   try {
-    const game = new GameManager(document.getElementById('game-root')!, document.getElementById('ui-root')!, setProgress);
+    setProgress(0.1);
+    await initPlatform();
+    setProgress(0.2);
+
+    const game = new GameManager(
+      document.getElementById('game-root')!,
+      document.getElementById('ui-root')!,
+      (p: number) => setProgress(0.2 + p * 0.7)
+    );
+    await game.init();
     setProgress(1);
+
     // Let the bar visibly finish, then reveal the title screen.
     setTimeout(() => {
       loading.classList.add('hidden');
@@ -21,4 +32,4 @@ function boot(): void {
   }
 }
 
-boot();
+void boot();
