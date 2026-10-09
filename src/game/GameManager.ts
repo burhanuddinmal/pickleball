@@ -62,6 +62,9 @@ export class GameManager {
   private nextServer!: Athlete;
   private nextFromRight = true;
   private debug = false;
+  /** Debug freeze: halts simulation and animation without opening the pause menu. */
+  private frozen = false;
+  private stepTicks = 0;
   private fps = 60;
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -152,7 +155,14 @@ export class GameManager {
 
     const st = this.fsm.state;
     const simulating = st === GameStateId.SERVING || st === GameStateId.RALLY || st === GameStateId.POINT_END || st === GameStateId.MAIN_MENU;
-    if (simulating) {
+    if (simulating && this.frozen) {
+      // Frozen: only advance when a single-step was requested.
+      this.accumulator = 0;
+      while (this.stepTicks > 0) {
+        this.tick(SIM.TICK_DT);
+        this.stepTicks--;
+      }
+    } else if (simulating) {
       this.accumulator += dt;
       let ticks = 0;
       while (this.accumulator >= SIM.TICK_DT && ticks < SIM.MAX_TICKS_PER_FRAME) {
@@ -162,7 +172,7 @@ export class GameManager {
       }
       if (ticks === SIM.MAX_TICKS_PER_FRAME) this.accumulator = 0; // drop time rather than spiral
     }
-    this.render(dt);
+    this.render(this.frozen ? 0 : dt);
   };
 
   private tick(dt: number): void {
@@ -184,7 +194,7 @@ export class GameManager {
     this.updateIndicators(dt);
     this.updateHint();
     this.hud.update(dt);
-    if (this.debug) this.hud.setDebug(this.debugText());
+    if (this.debug || this.frozen) this.hud.setDebug(this.debugText());
     this.sceneMgr.render();
   }
 
@@ -346,9 +356,15 @@ export class GameManager {
       if (e.code === 'Escape' || e.code === 'KeyP') this.togglePause();
       if (e.code === 'Backquote' || e.code === 'F3') {
         this.debug = !this.debug;
-        if (!this.debug) this.hud.setDebug(null);
+        if (!this.debug && !this.frozen) this.hud.setDebug(null);
         e.preventDefault();
       }
+      if (e.code === 'KeyF' && !e.repeat) {
+        this.frozen = !this.frozen;
+        this.stepTicks = 0;
+        if (!this.frozen && !this.debug) this.hud.setDebug(null);
+      }
+      if (e.code === 'Period' && this.frozen) this.stepTicks++;
       if (this.fsm.state === GameStateId.MAIN_MENU) {
         if (e.code === 'Space' || e.code === 'Enter') this.startPlaying();
         const idx = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
@@ -420,7 +436,7 @@ export class GameManager {
       <div class="controls-help">
         <span class="kbd">W A S D</span> move &nbsp; <span class="kbd">SHIFT</span> sprint &nbsp;
         <span class="kbd">SPACE</span> / <span class="kbd">CLICK</span> swing<br/>
-        Point the mouse at the far court to aim &nbsp;·&nbsp; <span class="kbd">ESC</span> pause &nbsp;·&nbsp; <span class="kbd">\`</span> debug<br/>
+        Point the mouse at the far court to aim &nbsp;·&nbsp; <span class="kbd">ESC</span> pause &nbsp;·&nbsp; <span class="kbd">\`</span> debug &nbsp;·&nbsp; <span class="kbd">F</span> freeze<br/>
         Mobile: left thumb moves, tap or swipe on the right to hit
       </div>`;
     title.addEventListener('click', (e) => {
@@ -514,6 +530,7 @@ export class GameManager {
     const b = r.ball.state;
     const t = this.ai.debugTarget;
     return [
+      ...(this.frozen ? ['** FROZEN **  F resume · . step one tick'] : []),
       `FPS        ${this.fps.toFixed(0)}  (${this.sceneMgr.quality})`,
       `state      ${this.fsm.state} / rally:${r.phase}`,
       `server     ${r.server?.name} (${r.serveFromRight ? 'right' : 'left'})`,
