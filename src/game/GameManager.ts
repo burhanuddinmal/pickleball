@@ -10,12 +10,14 @@ import { AIController, AI_PROFILES, type Difficulty } from '../players/AIControl
 import { Athlete } from '../players/Athlete';
 import { LocalInputProvider } from '../players/LocalInputProvider';
 import { PlayerController } from '../players/PlayerController';
-import { AthleteView, HERO_LOOK, RIVAL_LOOK } from '../render/AthleteView';
+import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { HERO_LOOK, PrimitiveAthleteView, RIVAL_LOOK, type AthleteLook, type AthleteRig } from '../render/AthleteView';
 import { BallView } from '../render/BallView';
 import { CameraRig } from '../render/CameraRig';
 import { Indicators } from '../render/Indicators';
-import { RIVAL_PADDLE, STARTER_PADDLE } from '../render/PaddleModel';
+import { RIVAL_PADDLE, STARTER_PADDLE, type PaddleLook } from '../render/PaddleModel';
 import { detectQuality, SceneManager } from '../render/SceneManager';
+import { SkinnedAthleteView } from '../render/SkinnedAthleteView';
 import { HUD } from '../ui/HUD';
 import { TouchControls } from '../ui/TouchControls';
 import { FAR, NEAR, PLAYER, SIM } from '../utils/Constants';
@@ -43,8 +45,8 @@ export class GameManager {
   private touch: TouchControls;
   private rally: RallyManager;
   private ballView: BallView;
-  private heroView: AthleteView;
-  private rivalView: AthleteView;
+  private heroView: AthleteRig;
+  private rivalView: AthleteRig;
   private indicators: Indicators;
   private hud: HUD;
   private uiRoot: HTMLElement;
@@ -66,7 +68,8 @@ export class GameManager {
   private ndc = new THREE.Vector2();
   private hitPoint = new THREE.Vector3();
 
-  constructor(gameRoot: HTMLElement, uiRoot: HTMLElement, onProgress: (p: number) => void) {
+  /** `athleteModel` is the rigged player GLB; null falls back to the primitive players. */
+  constructor(gameRoot: HTMLElement, uiRoot: HTMLElement, onProgress: (p: number) => void, athleteModel: GLTF | null = null) {
     this.uiRoot = uiRoot;
     this.sceneMgr = new SceneManager(gameRoot, detectQuality());
     const { scene, camera } = this.sceneMgr;
@@ -86,8 +89,12 @@ export class GameManager {
     this.rally = new RallyManager([this.heroCtl, rivalCtl], new Rng(Date.now() & 0xffffff));
 
     this.ballView = new BallView(scene);
-    this.heroView = new AthleteView(scene, HERO_LOOK, STARTER_PADDLE, '#ffd23f');
-    this.rivalView = new AthleteView(scene, RIVAL_LOOK, RIVAL_PADDLE);
+    const athleteView = (look: AthleteLook, paddle: PaddleLook, marker?: string): AthleteRig =>
+      athleteModel
+        ? new SkinnedAthleteView(scene, athleteModel, look, paddle, marker)
+        : new PrimitiveAthleteView(scene, look, paddle, marker);
+    this.heroView = athleteView(HERO_LOOK, STARTER_PADDLE, '#ffd23f');
+    this.rivalView = athleteView(RIVAL_LOOK, RIVAL_PADDLE);
     this.indicators = new Indicators(scene);
     this.cameraRig = new CameraRig(camera);
     this.sceneMgr.onResize((w, h) => this.cameraRig.setAspect(w / h));

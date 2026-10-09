@@ -1,6 +1,7 @@
 import './ui/styles.css';
 import { GameManager } from './game/GameManager';
 import { initPlatform } from './platforms';
+import { ATHLETE_MODEL_URL, loadAthleteModel } from './render/AthleteModel';
 
 async function boot(): Promise<void> {
   const bar = document.getElementById('loading-bar')!;
@@ -11,11 +12,17 @@ async function boot(): Promise<void> {
     setProgress(0.1);
     await initPlatform();
     setProgress(0.2);
+    const athleteModel = await loadAthleteModel(ATHLETE_MODEL_URL, (p) => setProgress(0.2 + p * 0.2)).catch((err) => {
+      console.warn('Player model failed to load; using primitive players.', err);
+      return null;
+    });
+    setProgress(0.4);
 
     const game = new GameManager(
       document.getElementById('game-root')!,
       document.getElementById('ui-root')!,
-      (p: number) => setProgress(0.2 + p * 0.7)
+      (p: number) => setProgress(0.4 + p * 0.5),
+      athleteModel,
     );
     await game.init();
     setProgress(1);

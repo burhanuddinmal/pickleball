@@ -22,12 +22,85 @@ const ARM_REACH = 0.86;
 
 const easeOut = (t: number) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
 
+/** What GameManager needs from a player view; implemented by the primitive and skinned models. */
+export interface AthleteRig {
+  readonly root: THREE.Group;
+  update(a: Athlete, dt: number): void;
+  setMarkerVisible(v: boolean): void;
+}
+
+/**
+ * Procedural swing pose shared by both player models: right-arm yaw/pitch around the body
+ * (Euler YXZ, arm hanging along -Y at rest) plus a torso twist. Pitch reaches for the ball's
+ * contact height given the model's shoulder height and arm (+paddle) reach.
+ */
+export class SwingPose {
+  armYaw = -0.4;
+  armPitch = 0.6;
+  torsoTwist = 0;
+
+  update(a: Athlete, dt: number, shoulderY: number, reach: number): void {
+    const sw = a.swing;
+    let yaw = -0.45;
+    let pitch = 0.75;
+    let twist = 0;
+    if (sw.active) {
+      const p = sw.t / PLAYER.SWING_DURATION;
+      if (sw.kind === 'serve') {
+        const k = easeOut((p - 0.1) / 0.6);
+        yaw = -0.3;
+        pitch = lerp(-0.9, 1.7, k);
+        twist = lerp(-0.25, 0.3, k);
+      } else {
+        const h = sw.contact ? sw.contactHeight : 1.0;
+        const reachPitch = Math.acos(clamp((shoulderY - h) / reach, -0.95, 0.97));
+        const k = easeOut(p / 0.7);
+        if (sw.hand === 'forehand') {
+          yaw = lerp(-2.0, 1.0, k);
+          twist = lerp(-0.55, 0.45, k);
+        } else {
+          yaw = lerp(1.7, -1.3, k);
+          twist = lerp(0.6, -0.4, k);
+        }
+        pitch = reachPitch + Math.sin(k * Math.PI) * 0.15 + (k > 0.6 ? (k - 0.6) * 0.8 : 0);
+      }
+      this.armYaw = yaw;
+      this.armPitch = pitch;
+      this.torsoTwist = twist;
+    } else {
+      this.armYaw = damp(this.armYaw, yaw, 10, dt);
+      this.armPitch = damp(this.armPitch, pitch, 10, dt);
+      this.torsoTwist = damp(this.torsoTwist, twist, 10, dt);
+    }
+  }
+}
+
+/** Soft contact shadow plus optional ground ring marker under a player. */
+export function addGroundDecals(root: THREE.Group, markerColor?: string): THREE.Mesh | null {
+  const blob = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.1, 1.1),
+    new THREE.MeshBasicMaterial({ map: blobTexture(), transparent: true, opacity: 0.55, depthWrite: false }),
+  );
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.007;
+  root.add(blob);
+  if (!markerColor) return null;
+  const marker = new THREE.Mesh(
+    new THREE.RingGeometry(0.42, 0.5, 32),
+    new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.75, depthWrite: false }),
+  );
+  marker.rotation.x = -Math.PI / 2;
+  marker.position.y = 0.009;
+  root.add(marker);
+  return marker;
+}
+
 /**
  * Stylized low-poly player built from primitives with procedural animation (run cycle,
  * side shuffle, ready crouch, forehand/backhand/serve swings). Reads Athlete state only.
- * Front of the model faces -Z.
+ * Front of the model faces -Z. Fallback when the GLB player model fails to load.
  */
-export class AthleteView {
+export class PrimitiveAthleteView implements AthleteRig {
   readonly root = new THREE.Group();
   private body = new THREE.Group();
   private torso = new THREE.Group();
@@ -40,9 +113,7 @@ export class AthleteView {
   private stride = 0;
   private crouch = 0;
   private lean = 0;
-  private armYaw = -0.4;
-  private armPitch = 0.6;
-  private torsoTwist = 0;
+  private pose = new SwingPose();
 
   constructor(scene: THREE.Scene, look: AthleteLook, paddle: PaddleLook, markerColor?: string) {
     const mat = (c: string, r = 0.75) => new THREE.MeshStandardMaterial({ color: c, roughness: r });
@@ -125,23 +196,7 @@ export class AthleteView {
     this.body.add(this.torso);
     this.root.add(this.body);
 
-    const blob = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.1, 1.1),
-      new THREE.MeshBasicMaterial({ map: blobTexture(), transparent: true, opacity: 0.55, depthWrite: false }),
-    );
-    blob.rotation.x = -Math.PI / 2;
-    blob.position.y = 0.007;
-    this.root.add(blob);
-
-    if (markerColor) {
-      this.marker = new THREE.Mesh(
-        new THREE.RingGeometry(0.42, 0.5, 32),
-        new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.75, depthWrite: false }),
-      );
-      this.marker.rotation.x = -Math.PI / 2;
-      this.marker.position.y = 0.009;
-      this.root.add(this.marker);
-    }
+    this.marker = addGroundDecals(this.root, markerColor);
     scene.add(this.root);
   }
 
@@ -182,41 +237,11 @@ export class AthleteView {
   }
 
   private animateSwing(a: Athlete, dt: number): void {
-    const sw = a.swing;
-    let yaw = -0.45;
-    let pitch = 0.75;
-    let twist = 0;
-    if (sw.active) {
-      const p = sw.t / PLAYER.SWING_DURATION;
-      if (sw.kind === 'serve') {
-        const k = easeOut((p - 0.1) / 0.6);
-        yaw = -0.3;
-        pitch = lerp(-0.9, 1.7, k);
-        twist = lerp(-0.25, 0.3, k);
-      } else {
-        const h = sw.contact ? sw.contactHeight : 1.0;
-        const reachPitch = Math.acos(clamp((SHOULDER_Y - this.crouch - h) / ARM_REACH, -0.95, 0.97));
-        const k = easeOut(p / 0.7);
-        if (sw.hand === 'forehand') {
-          yaw = lerp(-2.0, 1.0, k);
-          twist = lerp(-0.55, 0.45, k);
-        } else {
-          yaw = lerp(1.7, -1.3, k);
-          twist = lerp(0.6, -0.4, k);
-        }
-        pitch = reachPitch + Math.sin(k * Math.PI) * 0.15 + (k > 0.6 ? (k - 0.6) * 0.8 : 0);
-      }
-      this.armYaw = yaw;
-      this.armPitch = pitch;
-      this.torsoTwist = twist;
-    } else {
-      this.armYaw = damp(this.armYaw, yaw, 10, dt);
-      this.armPitch = damp(this.armPitch, pitch, 10, dt);
-      this.torsoTwist = damp(this.torsoTwist, twist, 10, dt);
-    }
-    this.armR.rotation.y = this.armYaw - this.torsoTwist;
-    this.armR.rotation.x = this.armPitch;
-    this.torso.rotation.y = this.torsoTwist;
+    const pose = this.pose;
+    pose.update(a, dt, SHOULDER_Y - this.crouch, ARM_REACH);
+    this.armR.rotation.y = pose.armYaw - pose.torsoTwist;
+    this.armR.rotation.x = pose.armPitch;
+    this.torso.rotation.y = pose.torsoTwist;
   }
 
   setMarkerVisible(v: boolean): void {
