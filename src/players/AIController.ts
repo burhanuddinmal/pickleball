@@ -2,7 +2,7 @@ import { Vector3 } from 'three';
 import { createBallState } from '../physics/BallPhysics';
 import { samplePath, type PathSample } from '../physics/Trajectory';
 import { COURT, PLAYER } from '../utils/Constants';
-import { clamp, Rng } from '../utils/MathUtils';
+import { clamp, Rng, sideToWorld } from '../utils/MathUtils';
 import { emptyIntent, type InputContext, type InputProvider, type PlayerIntent } from './InputProvider';
 
 export type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
@@ -76,6 +76,13 @@ export class AIController implements InputProvider {
       return;
     }
     this.wasServing = false;
+
+    if (!ctx.ballLive && ctx.lastHitterSide === null) {
+      // Opponent is about to serve: hold the diagonal receiving spot instead of shading toward the ball.
+      this.plan = null;
+      this.moveToward(ctx, this.receivePosition(ctx), 0.08);
+      return;
+    }
 
     this.shotId = ctx.shotIndex;
     const incoming = ctx.ballLive && ctx.lastHitterSide !== null && ctx.lastHitterSide !== ctx.side;
@@ -203,6 +210,11 @@ export class AIController implements InputProvider {
     return new Vector3(shade, 0, ctx.side * (COURT.HALF_LENGTH - 0.4));
   }
 
+  private receivePosition(ctx: InputContext): Vector3 {
+    const p = sideToWorld(ctx.side, ctx.serveFromRight ? PLAYER.SERVE_LATERAL : -PLAYER.SERVE_LATERAL, PLAYER.RECEIVE_DEPTH);
+    return new Vector3(p.x, 0, p.z);
+  }
+
   private chooseAim(ctx: InputContext): void {
     const i = this.intent;
     const p = this.profile;
@@ -240,5 +252,9 @@ export class AIController implements InputProvider {
     this.plan = null;
     this.wasServing = false;
     this.intent.swing = false;
+    // shotIndex restarts every rally, so per-shot decisions (reaction, whiff) must be rerolled.
+    this.planShotId = -1;
+    this.reactTimer = 0;
+    this.willWhiff = false;
   }
 }

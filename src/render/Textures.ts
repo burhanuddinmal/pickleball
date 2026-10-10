@@ -65,6 +65,31 @@ export function ringTexture(): THREE.Texture {
   return toTexture(c, false);
 }
 
+/**
+ * Bold italic text on a transparent background (line-call labels). Returned texture has
+ * `userData.aspect` = width / height so callers can size the quad without distortion.
+ */
+export function labelTexture(text: string, color: string): THREE.Texture {
+  const h = 128;
+  const font = `italic 900 ${h * 0.72}px 'Segoe UI', system-ui, Arial, sans-serif`;
+  const [, probe] = canvas(1, 1);
+  probe.font = font;
+  const w = Math.ceil(probe.measureText(text).width + h * 0.5);
+  const [c, g] = canvas(w, h);
+  g.font = font;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.lineJoin = 'round';
+  g.lineWidth = h * 0.12;
+  g.strokeStyle = 'rgba(10,16,28,0.85)';
+  g.strokeText(text, w / 2, h * 0.54);
+  g.fillStyle = color;
+  g.fillText(text, w / 2, h * 0.54);
+  const t = toTexture(c);
+  t.userData.aspect = w / h;
+  return t;
+}
+
 /** Net mesh pattern (tiling). */
 export function netTexture(): THREE.Texture {
   const [c, g] = canvas(64, 64);
@@ -118,4 +143,27 @@ export function fenceTexture(): THREE.Texture {
   const t = toTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   return t;
+}
+
+/** Soft puffy cloud on transparent: overlapping radial blobs, flatter at the base. */
+export function cloudTexture(): THREE.Texture {
+  const [c, g] = canvas(256, 128);
+  const puffs = [
+    [70, 80, 42],
+    [120, 62, 52],
+    [175, 76, 40],
+    [100, 88, 34],
+    [150, 90, 36],
+    [205, 92, 26],
+    [45, 94, 24],
+  ];
+  for (const [x, y, r] of puffs) {
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grad.addColorStop(0.6, 'rgba(255,255,255,0.75)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  return toTexture(c);
 }

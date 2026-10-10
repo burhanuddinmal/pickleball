@@ -70,6 +70,10 @@ body {
   background: radial-gradient(circle at 50% 35%, #1f4f8f 0%, #0f1b2d 70%);
 }
 
+#loading.loading {
+  visibility: visible;
+}
+
 .logo {
   font-weight: 900;
   font-size: clamp(42px, 11vw, 96px);
@@ -146,11 +150,18 @@ body {
 }
 
 /* ---------- HUD ---------- */
-.hud-top {
+.hud-corner {
   position: absolute;
   top: calc(10px + var(--safe-top));
-  left: 50%;
-  transform: translateX(-50%);
+  /* Top-left corner: top-centre covered the rival on the far baseline. */
+  left: calc(12px + env(safe-area-inset-left, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.hud-top {
   display: flex;
   align-items: stretch;
   border-radius: var(--radius);
@@ -164,8 +175,8 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 6px 16px;
-  min-width: 86px;
+  padding: 4px 12px;
+  min-width: 64px;
 }
 
 .hud-score .label {
@@ -176,7 +187,7 @@ body {
 }
 
 .hud-score .value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 900;
   line-height: 1.05;
 }
@@ -217,6 +228,103 @@ body {
   font-weight: 900;
 }
 
+/* Value pop when a score or the rally count changes (restarted from HUD.bump()). */
+.hud-score .value.bump {
+  animation: bump 0.5s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+
+.hud-mid .rally.bump {
+  animation: bump 0.3s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+
+@keyframes bump {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.45);
+    color: var(--accent);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* GAME POINT badge under the scoreboard, in the colour of the player holding it. */
+.gp-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  background: var(--accent);
+  color: var(--ink);
+  transform-origin: left center;
+  animation: gp-pulse 1.1s ease-in-out infinite;
+}
+
+.gp-badge.hero {
+  background: var(--hero);
+  color: var(--white);
+}
+
+.gp-badge.rival {
+  background: var(--rival);
+  color: var(--ink);
+}
+
+@keyframes gp-pulse {
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 14px 2px rgba(255, 255, 255, 0.45);
+  }
+}
+
+/* Full-screen edge tint on point end (restarted from HUD.edgeGlow()). */
+.edge-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  --glow: 255, 255, 255;
+  box-shadow: inset 0 0 14vmin 2vmin rgba(var(--glow), 0.5);
+}
+
+.edge-glow.good {
+  --glow: 90, 255, 150;
+}
+
+.edge-glow.bad {
+  --glow: 255, 70, 60;
+}
+
+.edge-glow.flash {
+  animation: edge-glow 0.6s ease-out;
+}
+
+@keyframes edge-glow {
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* "Reduce effects" setting (toggled on #ui-root by GameManager). */
+.reduce-fx .bump,
+.reduce-fx .gp-badge,
+.reduce-fx .banner.show,
+.reduce-fx .banner.hide,
+.reduce-fx .banner.slam.show .big,
+.reduce-fx .banner.slam.show .small {
+  animation: none;
+}
+
+.reduce-fx .edge-glow {
+  display: none;
+}
+
 .banner {
   position: absolute;
   top: 30%;
@@ -224,6 +332,9 @@ body {
   transform: translate(-50%, -50%);
   text-align: center;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.25s, visibility 0s 0.25s;
 }
 
 .banner .big {
@@ -242,7 +353,11 @@ body {
 }
 
 .banner.show {
-  animation: pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  opacity: 1;
+  visibility: visible;
+  transition: none;
+  /* `backwards`, not `both`: a held end keyframe would pin opacity at 1 and the banner could never fade. */
+  animation: pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
 }
 
 .banner.good .big {
@@ -261,6 +376,59 @@ body {
   to {
     transform: translate(-50%, -50%) scale(1);
     opacity: 1;
+  }
+}
+
+/* Exit: grow and fade out (held at the end; the next show resets the class list). */
+.banner.hide {
+  visibility: visible;
+  animation: banner-out 0.3s ease-in forwards;
+}
+
+@keyframes banner-out {
+  from {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* WINNER! slams in from big and skewed with a hard overshoot. */
+.banner.slam.show {
+  animation: none;
+}
+
+.banner.slam.show .big {
+  animation: slam 0.5s ease-out backwards;
+}
+
+.banner.slam.show .small {
+  animation: fade-in 0.25s 0.25s ease-out backwards;
+}
+
+@keyframes slam {
+  0% {
+    transform: scale(2.8) skewX(-20deg);
+    opacity: 0;
+  }
+  45% {
+    transform: scale(0.88) skewX(8deg);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(1.06) skewX(-3deg);
+  }
+  100% {
+    transform: scale(1) skewX(0deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
   }
 }
 
@@ -298,7 +466,7 @@ body {
 
 .debug {
   position: absolute;
-  top: calc(70px + var(--safe-top));
+  top: calc(112px + var(--safe-top));
   left: 10px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -473,4 +641,188 @@ body {
   font-size: 14px;
   opacity: 0.8;
   margin-bottom: 6px;
+}
+
+/* ---------- Rally milestones ---------- */
+/* Callout under the scoreboard, clear of the court (restarted from HUD.callout()). */
+.callout {
+  margin-left: 4px;
+  font-size: clamp(20px, 4.5vw, 30px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--accent);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 18px rgba(255, 150, 40, 0.55);
+  transform-origin: left center;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.callout.l2 {
+  color: #ffb03a;
+}
+
+.callout.l3 {
+  color: #ff6a3d;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 22px rgba(255, 80, 30, 0.75);
+}
+
+.callout.show {
+  animation: callout 1.4s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@keyframes callout {
+  0% {
+    opacity: 0;
+    transform: scale(0.4) rotate(-9deg);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.18) rotate(-3deg);
+  }
+  28% {
+    transform: scale(1) rotate(-3deg);
+  }
+  78% {
+    opacity: 1;
+    transform: translateX(4px) scale(1) rotate(-3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(14px) scale(0.95) rotate(-3deg);
+  }
+}
+
+@keyframes callout-fade {
+  10%,
+  78% {
+    opacity: 1;
+  }
+}
+
+/* Rally counter heats up at 5 / 10 / 15 shots (HUD.setRallyHeat()). */
+.hud-mid .rally.hot {
+  color: #ffc23a;
+  text-shadow: 0 0 8px rgba(255, 160, 40, 0.9);
+}
+
+.hud-mid .rally.hot[data-heat='2'] {
+  color: #ff8a3a;
+  text-shadow: 0 0 8px rgba(255, 120, 40, 1), 0 0 16px rgba(255, 90, 30, 0.6);
+}
+
+.hud-mid .rally.hot[data-heat='3'] {
+  color: #ff5a32;
+  text-shadow: 0 0 8px rgba(255, 90, 40, 1), 0 0 18px rgba(255, 60, 30, 0.8), 0 0 28px rgba(255, 200, 60, 0.45);
+}
+
+/* "+1" that flies from the landing spot into the winner's score (HUD.flyPoint(), WAAPI). */
+.plus-one {
+  position: fixed;
+  left: 0;
+  top: 0;
+  font-size: 36px;
+  font-weight: 900;
+  font-style: italic;
+  color: var(--accent);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 14px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  will-change: transform, opacity;
+  z-index: 2;
+}
+
+.plus-one.rival {
+  color: var(--rival);
+}
+
+/* ---------- Match over ---------- */
+/* Light, bottom-weighted dim so the winner's orbit and confetti stay visible behind the panel. */
+.overlay.dim.match-over {
+  justify-content: flex-end;
+  padding-bottom: calc(24px + var(--safe-bottom));
+  background: linear-gradient(180deg, rgba(8, 14, 24, 0) 0%, rgba(8, 14, 24, 0.1) 45%, rgba(8, 14, 24, 0.6) 100%);
+  backdrop-filter: none;
+}
+
+.final {
+  font-variant-numeric: tabular-nums;
+}
+
+.best-rally {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  background: var(--accent);
+  color: var(--ink);
+  animation: gp-pulse 1.1s ease-in-out infinite;
+}
+
+/* ---------- Menu feel ---------- */
+.btn,
+.match-len .opt,
+.title .tap {
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+@media (hover: hover) {
+  .btn:hover,
+  .match-len .opt:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  }
+
+  .title .tap:hover {
+    filter: brightness(1.08);
+  }
+}
+
+.btn:active,
+.match-len .opt:active {
+  transform: translateY(1px) scale(0.96);
+  box-shadow: none;
+  transition-duration: 0.05s;
+}
+
+.title .tap:active {
+  animation: none;
+  transform: scale(0.93);
+}
+
+.title .logo {
+  animation: logo-bob 3.2s ease-in-out infinite;
+}
+
+@keyframes logo-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(1deg);
+  }
+}
+
+/* Tier 3 motion under "reduce effects" and the OS reduced-motion setting. */
+.reduce-fx .title .logo,
+.reduce-fx .best-rally {
+  animation: none;
+}
+
+.reduce-fx .callout.show {
+  animation: callout-fade 1.4s linear both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .title .logo,
+  .title .tap,
+  .best-rally {
+    animation: none;
+  }
+
+  .callout.show {
+    animation: callout-fade 1.4s linear both;
+  }
 }

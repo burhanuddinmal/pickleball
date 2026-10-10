@@ -78,6 +78,15 @@ export const PLAYER = {
   CONTACT_WINDOW: 0.26,
   SERVE_CONTACT_DELAY: 0.16,
   SERVE_CONTACT_HEIGHT: 0.72,
+  /** Height of the ball held in the server's hand before the toss. */
+  SERVE_HOLD_HEIGHT: 0.82,
+  /** Server and receiver stand this far right (or left) of center, in diagonal service courts. */
+  SERVE_LATERAL: 1.25,
+  /** Receiver's starting distance from the net (just inside the baseline). */
+  RECEIVE_DEPTH: COURT.HALF_LENGTH - 0.15,
+  /** Rendered player height (m) and paddle size multiplier, shared by both player models. */
+  MODEL_HEIGHT: 1.7,
+  PADDLE_SCALE: 1.05,
   /** How far behind the baseline / outside the sidelines a player may roam. */
   BACK_ROOM: 3.6,
   SIDE_ROOM: 2.6,

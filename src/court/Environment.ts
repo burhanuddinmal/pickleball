@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { COURT } from '../utils/Constants';
-import { fenceTexture, skyTexture } from '../render/Textures';
+import { cloudTexture, fenceTexture, skyTexture } from '../render/Textures';
 import type { GraphicsQuality } from '../render/SceneManager';
+import { Crowd, CROWD_LAYOUT_DEFAULTS, layoutCrowdSeats, rowCenterX } from './Crowd';
 
 export interface EnvironmentTheme {
   name: string;
@@ -21,11 +22,71 @@ export const OUTDOOR_THEME: EnvironmentTheme = {
   stands: '#39424e',
 };
 
+/** Slow background motion (drifting clouds, swaying tree tops); null on low quality. */
+export class Ambient {
+  private readonly uniforms = { uTime: { value: 0 } };
+  private readonly clouds: THREE.Sprite[] = [];
+  /** Cloud drift speed (m/s along x) and wrap half-width. */
+  private static readonly DRIFT = 0.9;
+  private static readonly SPAN = 130;
+
+  constructor(group: THREE.Group, treeMat: THREE.MeshStandardMaterial) {
+    treeMat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          uniform float uTime;`,
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          #ifdef USE_INSTANCING
+            // Sway grows toward the tip (cone spans y -3.5..3.5); phase from the instance position.
+            float ph = instanceMatrix[3].x * 0.37 + instanceMatrix[3].z * 0.23;
+            float w = (position.y + 3.5) / 7.0;
+            w *= w;
+            transformed.x += sin(uTime * 1.1 + ph) * 0.22 * w;
+            transformed.z += sin(uTime * 0.8 + ph * 1.7) * 0.12 * w;
+          #endif`,
+        );
+    };
+    treeMat.customProgramCacheKey = () => 'trees-sway';
+
+    const tex = cloudTexture();
+    for (let i = 0; i < 9; i++) {
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false, opacity: 0.7 + Math.random() * 0.25 });
+      const cloud = new THREE.Sprite(mat);
+      const a = (i / 9) * Math.PI * 2 + Math.random() * 0.4;
+      const d = 95 + Math.random() * 25;
+      const w = 26 + Math.random() * 22;
+      cloud.scale.set(w, w * 0.45, 1);
+      cloud.position.set(Math.cos(a) * d, 16 + Math.random() * 14, Math.sin(a) * d);
+      group.add(cloud);
+      this.clouds.push(cloud);
+    }
+  }
+
+  update(dt: number): void {
+    this.uniforms.uTime.value += dt;
+    for (const c of this.clouds) {
+      c.position.x += Ambient.DRIFT * dt;
+      if (c.position.x > Ambient.SPAN) c.position.x -= Ambient.SPAN * 2;
+    }
+  }
+}
+
 /**
  * Procedural venue around the court: sky, ground, fence, bleachers with a lightweight
  * instanced crowd, and light towers. Purely visual; nothing here affects gameplay.
+ * Returns the crowd and ambient motion (both null on low quality) so the game loop can animate them.
  */
-export function buildEnvironment(scene: THREE.Scene, theme: EnvironmentTheme, quality: GraphicsQuality): THREE.Group {
+export function buildEnvironment(
+  scene: THREE.Scene,
+  theme: EnvironmentTheme,
+  quality: GraphicsQuality,
+): { group: THREE.Group; crowd: Crowd | null; ambient: Ambient | null } {
   const g = new THREE.Group();
   g.name = 'environment';
   scene.background = skyTexture(theme.skyTop, theme.skyHorizon);
@@ -72,39 +133,28 @@ export function buildEnvironment(scene: THREE.Scene, theme: EnvironmentTheme, qu
   wall.position.set(0, 0.45, fz);
   g.add(wall);
 
-  // Bleachers along both sidelines with an instanced crowd.
+  // Bleachers along both sidelines with an instanced low-poly crowd seated on a non-overlapping grid.
   const standMat = new THREE.MeshStandardMaterial({ color: theme.stands, roughness: 0.8 });
-  const rows = 5;
-  const crowdCount = quality === 'low' ? 0 : quality === 'medium' ? 220 : 420;
-  const crowd = new THREE.InstancedMesh(new THREE.CapsuleGeometry(0.2, 0.35, 2, 6), new THREE.MeshStandardMaterial({ roughness: 0.9 }), crowdCount * 2);
-  const palette = [0xe85d4a, 0xf2c14e, 0x4fb3bf, 0xffffff, 0x7a5cff, 0x2e2e38, 0x5cc96b, 0xff8fb1].map((c) => new THREE.Color(c));
-  const mtx = new THREE.Matrix4();
-  let idx = 0;
+  const { rows, rowDepth, rowRise } = CROWD_LAYOUT_DEFAULTS;
   for (const s of [1, -1]) {
     for (let r = 0; r < rows; r++) {
-      const step = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.45, fz * 1.6), standMat);
-      step.position.set(s * (fx + 1.2 + r * 1.1), 0.225 + r * 0.45, 0);
-      step.scale.y = 1 + r * 2;
-      step.position.y = (0.45 * (1 + r * 2)) / 2;
+      const h = rowRise * (1 + r * 2);
+      const step = new THREE.Mesh(new THREE.BoxGeometry(rowDepth, h, fz * 1.6), standMat);
+      step.position.set(rowCenterX(fx, s, r, rowDepth), h / 2, 0);
       step.receiveShadow = true;
       g.add(step);
     }
-    for (let i = 0; i < crowdCount; i++) {
-      const r = Math.floor(Math.random() * rows);
-      const x = s * (fx + 1.2 + r * 1.1 + (Math.random() - 0.5) * 0.3);
-      const z = (Math.random() - 0.5) * fz * 1.5;
-      mtx.makeTranslation(x, 0.45 * (1 + r * 2) + 0.38, z);
-      crowd.setMatrixAt(idx, mtx);
-      crowd.setColorAt(idx, palette[Math.floor(Math.random() * palette.length)]);
-      idx++;
-    }
   }
-  crowd.count = idx;
-  if (idx > 0) g.add(crowd);
+  const occupancy = quality === 'low' ? 0 : quality === 'medium' ? 0.55 : 0.9;
+  let crowd: Crowd | null = null;
+  if (occupancy > 0) {
+    crowd = new Crowd(layoutCrowdSeats({ ...CROWD_LAYOUT_DEFAULTS, fx, fz, occupancy }));
+    g.add(crowd.mesh);
+  }
 
   // Light towers at the corners.
   const towerMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.6, roughness: 0.4 });
-  const lampMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff6d8, emissiveIntensity: 1.2 });
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff6d8, emissiveIntensity: quality === 'low' ? 1.2 : 2.4 });
   for (const sx of [1, -1]) {
     for (const sz of [1, -1]) {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 11, 8), towerMat);
@@ -119,6 +169,7 @@ export function buildEnvironment(scene: THREE.Scene, theme: EnvironmentTheme, qu
 
   // Distant tree line for depth.
   const treeMat = new THREE.MeshStandardMaterial({ color: 0x2f6b3a, roughness: 1 });
+  const mtx = new THREE.Matrix4();
   const trees = new THREE.InstancedMesh(new THREE.ConeGeometry(2.2, 7, 7), treeMat, 60);
   for (let i = 0; i < 60; i++) {
     const a = (i / 60) * Math.PI * 2;
@@ -128,7 +179,8 @@ export function buildEnvironment(scene: THREE.Scene, theme: EnvironmentTheme, qu
     trees.setMatrixAt(i, mtx);
   }
   g.add(trees);
+  const ambient = quality === 'low' ? null : new Ambient(g, treeMat);
 
   scene.add(g);
-  return g;
+  return { group: g, crowd, ambient };
 }

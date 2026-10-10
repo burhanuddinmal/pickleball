@@ -1,10 +1,19 @@
 import * as THREE from 'three';
 import { AudioManager } from '../audio/AudioManager';
 import { buildCourt } from '../court/Court';
-import { buildEnvironment, OUTDOOR_THEME } from '../court/Environment';
-import { buildNet } from '../court/Net';
+import type { Crowd } from '../court/Crowd';
+import { buildEnvironment, OUTDOOR_THEME, type Ambient } from '../court/Environment';
+import { NetView } from '../court/Net';
 import { clampServeAim } from '../gameplay/ShotSystem';
-import { isGamePoint, MATCH_TARGETS, matchWinner, type MatchTarget, type RallyOutcome } from '../gameplay/RuleManager';
+import {
+  distanceToNearestLine,
+  isGamePoint,
+  MATCH_TARGETS,
+  matchWinner,
+  sideOfZ,
+  type MatchTarget,
+  type RallyOutcome,
+} from '../gameplay/RuleManager';
 import { predictLanding } from '../physics/Trajectory';
 import { AIController, AI_PROFILES, type Difficulty } from '../players/AIController';
 import { Athlete } from '../players/Athlete';
@@ -14,7 +23,10 @@ import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { HERO_LOOK, PrimitiveAthleteView, RIVAL_LOOK, type AthleteLook, type AthleteRig } from '../render/AthleteView';
 import { BallView } from '../render/BallView';
 import { CameraRig } from '../render/CameraRig';
-import { Indicators } from '../render/Indicators';
+import { Effects } from '../render/Effects';
+import { Indicators, type LandingMarker } from '../render/Indicators';
+import { LineCalls } from '../render/LineCalls';
+import { PaddleSwoosh } from '../render/PaddleSwoosh';
 import { RIVAL_PADDLE, STARTER_PADDLE, type PaddleLook } from '../render/PaddleModel';
 import { detectQuality, SceneManager } from '../render/SceneManager';
 import { SkinnedAthleteView } from '../render/SkinnedAthleteView';
@@ -23,10 +35,28 @@ import { TouchControls } from '../ui/TouchControls';
 import { FAR, NEAR, PLAYER, SIM } from '../utils/Constants';
 import { aimToWorld, Rng } from '../utils/MathUtils';
 import { GameStateId, GameStateMachine } from './GameState';
+import { HitStop } from './HitStop';
 import { RallyManager } from './RallyManager';
 import { platform } from '../platforms';
 
 const POINT_PAUSE = 1.9;
+/** In-bounds first bounces this close (m) to a sideline or baseline get a "CLOSE!" call. */
+const CLOSE_CALL_DIST = 0.1;
+/** Rally-milestone callouts, one every 5 shots (the last repeats). */
+const MILESTONE_EVERY = 5;
+const MILESTONE_CALLS = ['HOT RALLY!', 'ON FIRE!', 'UNSTOPPABLE!', 'LEGENDARY!'];
+/** Point-ending slow motion: real duration (s) and time scale; and the rally length that earns it. */
+const SLOWMO = { seconds: 0.6, scale: 0.35, minShots: 10 };
+/** Footwork dust: velocity change (m/s) against a lagged velocity that counts as a hard push-off. */
+const FOOT_KICK = 2.6;
+const FOOT_COOLDOWN = 0.35;
+
+/** Per-athlete state for footwork dust detection. */
+interface Footwork {
+  /** Lagged (smoothed) velocity; the gap to the real velocity measures how hard they're changing. */
+  lag: THREE.Vector3;
+  cooldown: number;
+}
 
 /**
  * Composition root and main loop. Wires simulation (RallyManager), presentation (views, camera,
@@ -48,6 +78,14 @@ export class GameManager {
   private heroView: AthleteRig;
   private rivalView: AthleteRig;
   private indicators: Indicators;
+  private effects: Effects;
+  private netView: NetView;
+  private lineCalls: LineCalls;
+  private heroSwoosh: PaddleSwoosh;
+  private rivalSwoosh: PaddleSwoosh;
+  private hitStop = new HitStop();
+  private crowd: Crowd | null;
+  private ambient: Ambient | null;
   private hud: HUD;
   private uiRoot: HTMLElement;
   private overlays: { title: HTMLElement; pause: HTMLElement; matchOver: HTMLElement };
@@ -56,9 +94,24 @@ export class GameManager {
   private lastFrame = 0;
   private pointTimer = 0;
   private landing: { x: number; z: number } | null = null;
+  /** Rally (sim) time the landing was predicted at, and the predicted flight time to it. */
+  private landingAt = 0;
+  private landingFlight = 1;
+  /** Where the ball last touched the court (for the OUT mark). */
+  private lastBounce = new THREE.Vector3();
   private tally = { hero: 0, rival: 0 };
+  /** Bumped on each serve so a late "+1" flyer can't overwrite a newer score. */
+  private pointSeq = 0;
+  /** Longest rally this match, and the stored best when the match began ("NEW BEST RALLY!"). */
+  private matchBestRally = 0;
+  private bestAtMatchStart = 0;
+  private footwork = new Map<Athlete, Footwork>();
   private target: MatchTarget = 11;
   private stats = { matchesPlayed: 0, matchesWon: 0, bestRally: 0 };
+  /** Platform-saved free-form data, kept so saving one key doesn't drop the others. */
+  private customData: Record<string, unknown> = {};
+  /** "Reduce effects": no camera kicks, hit-stop, flashes or HUD pops. */
+  private reducedFx = false;
   private nextServer!: Athlete;
   private nextFromRight = true;
   private debug = false;
@@ -70,6 +123,8 @@ export class GameManager {
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private ndc = new THREE.Vector2();
   private hitPoint = new THREE.Vector3();
+  private tipPos = new THREE.Vector3();
+  private scratch = new THREE.Vector3();
 
   /** `athleteModel` is the rigged player GLB; null falls back to the primitive players. */
   constructor(gameRoot: HTMLElement, uiRoot: HTMLElement, onProgress: (p: number) => void, athleteModel: GLTF | null = null) {
@@ -78,12 +133,14 @@ export class GameManager {
     const { scene, camera } = this.sceneMgr;
     onProgress(0.2);
 
-    buildEnvironment(scene, OUTDOOR_THEME, this.sceneMgr.quality);
-    scene.add(buildCourt(), buildNet());
+    ({ crowd: this.crowd, ambient: this.ambient } = buildEnvironment(scene, OUTDOOR_THEME, this.sceneMgr.quality));
+    this.netView = new NetView();
+    scene.add(buildCourt(), this.netView.root);
     onProgress(0.5);
 
     this.hero = new Athlete('hero', NEAR, 'You');
     this.rival = new Athlete('rival', FAR, 'CPU');
+    for (const a of [this.hero, this.rival]) this.footwork.set(a, { lag: new THREE.Vector3(), cooldown: 0 });
     this.touch = new TouchControls(uiRoot);
     this.local = new LocalInputProvider(this.sceneMgr.renderer.domElement, this.pickGround, this.touch);
     this.ai = new AIController(AI_PROFILES.medium, (Date.now() & 0xffff) + 1);
@@ -99,6 +156,10 @@ export class GameManager {
     this.heroView = athleteView(HERO_LOOK, STARTER_PADDLE, '#ffd23f');
     this.rivalView = athleteView(RIVAL_LOOK, RIVAL_PADDLE);
     this.indicators = new Indicators(scene);
+    this.effects = new Effects(scene, this.sceneMgr.quality);
+    this.lineCalls = new LineCalls(scene);
+    this.heroSwoosh = new PaddleSwoosh(scene, 0xffe14d);
+    this.rivalSwoosh = new PaddleSwoosh(scene, 0x41e2ba);
     this.cameraRig = new CameraRig(camera);
     this.sceneMgr.onResize((w, h) => this.cameraRig.setAspect(w / h));
     onProgress(0.8);
@@ -106,6 +167,7 @@ export class GameManager {
     this.hud = new HUD(uiRoot, 'You', 'CPU');
     this.overlays = this.buildOverlays();
     this.setTarget(this.target, false);
+    this.setReducedEffects(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false, false);
     this.bindRallyEvents();
     this.bindGlobalInput();
     this.bindPlatformEvents();
@@ -128,9 +190,27 @@ export class GameManager {
         if (saved.matchesPlayed !== undefined) this.stats.matchesPlayed = saved.matchesPlayed;
         if (saved.matchesWon !== undefined) this.stats.matchesWon = saved.matchesWon;
         if (saved.bestRally !== undefined) this.stats.bestRally = saved.bestRally;
+        if (saved.customData) this.customData = { ...saved.customData };
+        if (typeof this.customData.reducedEffects === 'boolean') this.setReducedEffects(this.customData.reducedEffects, false);
       }
     } catch (err) {
       console.warn('[GameManager] Failed to load progress from platform:', err);
+    }
+  }
+
+  /** Toggles motion-heavy effects (camera kicks and shake, hit-stop, flashes, HUD pops). */
+  setReducedEffects(v: boolean, persist = true): void {
+    this.reducedFx = v;
+    this.cameraRig.shakeEnabled = !v;
+    this.hitStop.enabled = !v;
+    if (v) this.hitStop.clear();
+    this.effects.flashEnabled = !v;
+    this.netView.flashEnabled = !v;
+    this.uiRoot.classList.toggle('reduce-fx', v);
+    this.updatePauseFxBtn();
+    if (persist) {
+      this.customData = { ...this.customData, reducedEffects: v };
+      void platform.saveProgress({ customData: this.customData });
     }
   }
 
@@ -155,6 +235,8 @@ export class GameManager {
 
     const st = this.fsm.state;
     const simulating = st === GameStateId.SERVING || st === GameStateId.RALLY || st === GameStateId.POINT_END || st === GameStateId.MAIN_MENU;
+    // World time: slowed by hit-stop while simulating; camera and HUD keep real time.
+    let worldDt = dt;
     if (simulating && this.frozen) {
       // Frozen: only advance when a single-step was requested.
       this.accumulator = 0;
@@ -163,16 +245,23 @@ export class GameManager {
         this.stepTicks--;
       }
     } else if (simulating) {
-      this.accumulator += dt;
+      const wasStopped = this.hitStop.active;
+      worldDt = this.hitStop.scale(dt);
+      this.accumulator += worldDt;
       let ticks = 0;
       while (this.accumulator >= SIM.TICK_DT && ticks < SIM.MAX_TICKS_PER_FRAME) {
         this.tick(SIM.TICK_DT);
         this.accumulator -= SIM.TICK_DT;
         ticks++;
+        // A hit-stop that starts mid-frame drops the rest of this frame so the freeze is crisp.
+        if (!wasStopped && this.hitStop.active) {
+          this.accumulator = 0;
+          break;
+        }
       }
       if (ticks === SIM.MAX_TICKS_PER_FRAME) this.accumulator = 0; // drop time rather than spiral
     }
-    this.render(this.frozen ? 0 : dt);
+    this.render(this.frozen ? 0 : worldDt, this.frozen ? 0 : dt);
   };
 
   private tick(dt: number): void {
@@ -185,12 +274,24 @@ export class GameManager {
     }
   }
 
-  private render(dt: number): void {
+  /** `worldDt` drives everything in the scene (slowed by hit-stop); `dt` is real frame time. */
+  private render(worldDt: number, dt: number): void {
     const r = this.rally;
-    this.heroView.update(this.hero, dt);
-    this.rivalView.update(this.rival, dt);
-    this.ballView.update(r.ball.state, dt, this.sceneMgr.camera);
+    const { camera, renderer } = this.sceneMgr;
+    this.heroView.update(this.hero, worldDt);
+    this.rivalView.update(this.rival, worldDt);
+    this.ballView.update(r.ball.state, worldDt, camera);
+    this.heroSwoosh.update(this.hero, this.heroView, camera);
+    this.rivalSwoosh.update(this.rival, this.rivalView, camera);
+    this.netView.update(worldDt);
+    this.lineCalls.update(worldDt);
+    this.crowd?.update(worldDt);
+    this.ambient?.update(worldDt);
+    this.updateFootwork(this.hero, worldDt);
+    this.updateFootwork(this.rival, worldDt);
+    this.heroView.setMarkerPulse(r.phase === 'live' && r.lastHitter !== this.hero);
     this.cameraRig.update(this.cameraFocus(), dt);
+    this.effects.update(worldDt, camera, renderer.domElement.height);
     this.updateIndicators(dt);
     this.updateHint();
     this.hud.update(dt);
@@ -206,13 +307,26 @@ export class GameManager {
   // ---------------------------------------------------------------- flow
 
   private beginServe(): void {
+    this.hud.hideBanner();
     this.ballView.resetTrail();
-    this.landing = null;
+    this.lineCalls.clear();
+    this.clearPointMoments();
+    this.pointSeq++;
     this.rally.startServe(this.nextServer, this.nextFromRight);
     this.fsm.go(GameStateId.SERVING);
     this.hud.setScores(this.tally.hero, this.tally.rival, this.nextServer === this.hero);
     this.hud.setRally(0);
     platform.onGameplayStart();
+  }
+
+  /** Resets everything the point-end presentation set up (poses, camera push-in, rally heat). */
+  private clearPointMoments(): void {
+    this.landing = null;
+    this.heroView.react(null);
+    this.rivalView.react(null);
+    this.cameraRig.setPointFocus(null);
+    this.hud.setRallyHeat(0);
+    this.crowd?.setTension(0);
   }
 
   private afterPoint(): void {
@@ -225,9 +339,20 @@ export class GameManager {
     const el = this.overlays.matchOver;
     el.querySelector('.result')!.textContent = heroWon ? 'YOU WIN!' : 'CPU WINS';
     el.querySelector('.result')!.classList.toggle('win', heroWon);
-    el.querySelector('.final')!.textContent = `${this.tally.hero} – ${this.tally.rival}`;
+    this.countUpFinal(el.querySelector('.final')!, this.tally.hero, this.tally.rival);
     el.querySelector('.sub')!.textContent = `Game to ${this.target} · win by 2`;
+    const best = el.querySelector<HTMLElement>('.best-rally')!;
+    const newBest = this.matchBestRally > this.bestAtMatchStart && this.matchBestRally >= 4;
+    best.classList.toggle('hidden', !newBest);
+    best.textContent = `NEW BEST RALLY! ${this.matchBestRally} SHOTS`;
+
+    // Celebrate behind the overlay: orbit the winner; confetti when it's the player.
+    const winner = heroWon ? this.hero : this.rival;
+    this.cameraRig.setPointFocus(null);
+    this.cameraRig.orbit(winner.pos, winner.side);
+    if (heroWon) this.effects.confetti(winner.pos);
     this.hud.setHint('');
+    this.hud.hideBanner();
     this.audio.play(heroWon ? 'pointWon' : 'pointLost');
     this.fsm.go(GameStateId.MATCH_OVER);
 
@@ -244,18 +369,30 @@ export class GameManager {
 
   private newMatch(): void {
     this.tally = { hero: 0, rival: 0 };
+    this.matchBestRally = 0;
+    this.bestAtMatchStart = this.stats.bestRally;
     this.nextServer = this.hero;
     this.nextFromRight = true;
     this.hud.setTarget(this.target);
+    this.hud.setGamePoint(null);
+    this.effects.clearConfetti();
+    this.hitStop.clear();
     this.beginServe();
+    this.cameraRig.snap(this.cameraFocus()); // also ends the match-over orbit
   }
 
   private goToMenu(): void {
     platform.onGameplayStop();
+    this.hud.hideBanner();
+    this.hud.setGamePoint(null);
     this.fsm.go(GameStateId.MAIN_MENU);
     this.ballView.resetTrail();
-    this.landing = null;
+    this.lineCalls.clear();
+    this.clearPointMoments();
+    this.effects.clearConfetti();
+    this.hitStop.clear();
     this.rally.startServe(this.hero, true);
+    this.cameraRig.snap(this.cameraFocus());
   }
 
   private setTarget(t: MatchTarget, persist = true): void {
@@ -276,28 +413,74 @@ export class GameManager {
     this.overlays.title.classList.toggle('hidden', to !== GameStateId.MAIN_MENU);
     this.overlays.pause.classList.toggle('hidden', to !== GameStateId.PAUSED);
     this.overlays.matchOver.classList.toggle('hidden', to !== GameStateId.MATCH_OVER);
-    if (to === GameStateId.PAUSED) this.accumulator = 0;
+    if (to === GameStateId.PAUSED) {
+      this.accumulator = 0;
+      this.updatePauseMuteBtn();
+    }
+
+    switch (to) {
+      case GameStateId.MAIN_MENU:
+        this.audio.setDucked(false);
+        this.audio.playBgm('menu');
+        break;
+      case GameStateId.SERVING:
+      case GameStateId.RALLY:
+      case GameStateId.POINT_END:
+        this.audio.setDucked(false);
+        this.audio.playBgm('match');
+        break;
+      case GameStateId.PAUSED:
+        this.audio.setDucked(true);
+        break;
+      case GameStateId.MATCH_OVER:
+        this.audio.setDucked(false);
+        this.audio.playBgm('menu');
+        break;
+    }
   }
 
   private onRallyEnd(outcome: RallyOutcome, shots: number): void {
     const heroWon = outcome.winner === this.hero.side;
+    const prev = { ...this.tally };
+    const wasGamePoint = isGamePoint(prev.hero, prev.rival, this.target) || isGamePoint(prev.rival, prev.hero, this.target);
     if (outcome.winner !== null) {
-      // Phase 1 tally: winner of the rally serves next, switching sides after each point it wins.
+      // Phase 1 tally: winner of the rally serves next. Singles rule: serve from the right on an
+      // even score, from the left on an odd one.
       const winner = heroWon ? this.hero : this.rival;
       if (heroWon) this.tally.hero++;
       else this.tally.rival++;
-      this.nextFromRight = winner === this.nextServer ? !this.nextFromRight : true;
+      this.nextFromRight = (heroWon ? this.tally.hero : this.tally.rival) % 2 === 0;
       this.nextServer = winner;
     }
-    this.hud.setScores(this.tally.hero, this.tally.rival, null);
+    // "+1" flies from where the point ended into the winner's score, which updates on arrival.
+    const fly = outcome.winner !== null && !this.reducedFx && this.toScreen(this.rally.ball.state.pos, this.scratch);
+    this.hud.setScores(fly ? prev.hero : this.tally.hero, fly ? prev.rival : this.tally.rival, null);
+    if (fly) {
+      const seq = this.pointSeq;
+      this.hud.flyPoint(heroWon ? 'hero' : 'rival', this.scratch.x, this.scratch.y, () => {
+        if (seq === this.pointSeq) this.hud.setScores(this.tally.hero, this.tally.rival, null);
+      });
+    }
     const [big, detail] = this.describeOutcome(outcome, heroWon, shots);
     const { hero, rival } = this.tally;
     const w = matchWinner(hero, rival, this.target);
-    let small = detail;
-    if (w) small = w === 'a' ? 'GAME — you win the match!' : 'GAME — CPU wins the match';
-    else if (isGamePoint(hero, rival, this.target) || isGamePoint(rival, hero, this.target)) small = `${detail} · GAME POINT`;
-    this.hud.showBanner(big, small, outcome.winner === null ? 'neutral' : heroWon ? 'good' : 'bad', POINT_PAUSE - 0.2);
-    if (outcome.winner !== null) this.audio.play(heroWon ? 'pointWon' : 'pointLost');
+    const small = w ? (w === 'a' ? 'GAME — you win the match!' : 'GAME — CPU wins the match') : detail;
+    this.hud.setGamePoint(
+      w ? null : isGamePoint(hero, rival, this.target) ? 'hero' : isGamePoint(rival, hero, this.target) ? 'rival' : null,
+    );
+    const slam = outcome.reason === 'MISS' && heroWon;
+    this.hud.showBanner(big, small, outcome.winner === null ? 'neutral' : heroWon ? 'good' : 'bad', POINT_PAUSE - 0.2, slam);
+    if (outcome.reason === 'OUT_OF_BOUNDS') this.lineCalls.showOut(this.lastBounce.x, this.lastBounce.z);
+    if (outcome.winner !== null) {
+      this.audio.play(heroWon ? 'pointWon' : 'pointLost');
+      this.crowd?.cheer(heroWon ? 1 : 0.6);
+      this.hud.edgeGlow(heroWon ? 'good' : 'bad');
+      this.heroView.react(heroWon ? 'win' : 'lose');
+      this.rivalView.react(heroWon ? 'lose' : 'win');
+      // Push in on the OUT mark, otherwise on the point's winner.
+      this.cameraRig.setPointFocus(outcome.reason === 'OUT_OF_BOUNDS' ? this.lastBounce : (heroWon ? this.hero : this.rival).pos);
+      if (wasGamePoint || shots >= SLOWMO.minShots) this.hitStop.slowMo(SLOWMO.seconds, SLOWMO.scale);
+    }
     this.pointTimer = POINT_PAUSE;
     this.fsm.go(GameStateId.POINT_END);
   }
@@ -324,29 +507,74 @@ export class GameManager {
     bus.on('hit', (e) => {
       const pan = e.pos.x / 6;
       const intensity = Math.min(1, e.speed / 22);
-      this.audio.play(e.kind === 'serve' ? 'serve' : intensity > 0.75 ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan);
-      if (intensity > 0.8) this.cameraRig.impulse(0.35);
+      const power = intensity > 0.75;
+      (e.athlete === this.hero ? this.heroView : this.rivalView).onHit(intensity);
+      this.audio.play(e.kind === 'serve' ? 'serve' : power ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan);
+      // Kick on every hero contact (felt in the hands), and on any power shot.
+      const kick = Math.max(power ? 0.45 : 0, e.athlete === this.hero ? 0.2 + 0.2 * intensity : 0);
+      if (kick > 0) this.cameraRig.impulse(kick);
+      if (e.kind === 'stroke') this.hitStop.trigger(power ? 0.07 : intensity > 0.45 ? 0.04 : 0);
+      if (e.kind === 'stroke' && power) this.cameraRig.punch(1.5);
+      const vel = this.rally.ball.state.vel;
+      this.effects.hitBurst(e.pos, vel, intensity);
+      this.ballView.onHit(vel, intensity);
       if (e.athlete === this.hero && platform.capabilities.haptics) {
         platform.vibrate?.(intensity > 0.75 ? 35 : 15);
       }
       this.ballView.resetTrail();
       if (this.fsm.state === GameStateId.SERVING) this.fsm.go(GameStateId.RALLY);
       this.hud.setRally(e.shotIndex);
+      this.rallyMilestone(e.shotIndex);
       // Landing assist for balls coming toward the hero.
       if (e.athlete !== this.hero) {
         const p = predictLanding(this.rally.ball.state);
         this.landing = p && !p.hitsNet ? { x: p.point.x, z: p.point.z } : null;
+        if (p) {
+          this.landingAt = this.rally.time;
+          this.landingFlight = Math.max(0.05, p.time);
+        }
       } else {
         this.landing = null;
       }
     });
     bus.on('bounce', (e) => {
       this.audio.play('bounce', Math.min(1, e.speed / 8), e.pos.x / 6);
+      this.effects.bounceBurst(e.pos, e.speed, e.inBounds);
+      this.ballView.onBounce(e.speed);
       this.landing = null;
+      this.lastBounce.copy(e.pos);
+      // Close call: a good first bounce on the receiver's side that only just caught a line.
+      const r = this.rally;
+      if (
+        e.inBounds &&
+        r.phase === 'live' &&
+        r.bouncesSinceHit === 1 &&
+        r.lastHitter &&
+        sideOfZ(e.pos.z) !== r.lastHitter.side &&
+        distanceToNearestLine(e.pos.x, e.pos.z) < CLOSE_CALL_DIST
+      ) {
+        this.lineCalls.showClose(e.pos.x, e.pos.z, this.hero.side);
+        this.crowd?.gasp();
+      }
     });
-    bus.on('net', (e) => this.audio.play('net', 0.6, e.pos.x / 6));
+    bus.on('net', (e) => {
+      this.audio.play('net', 0.6, e.pos.x / 6);
+      this.netView.onHit(e.pos.x, e.tape);
+      this.effects.netPuff(e.pos, e.tape);
+      if (e.tape) {
+        this.cameraRig.impulse(0.25);
+        this.cameraRig.shake(0.35);
+        this.crowd?.gasp();
+      }
+    });
+    bus.on('swingEnd', (e) => {
+      if (e.contact) return;
+      const rig = e.athlete === this.hero ? this.heroView : this.rivalView;
+      this.effects.whiffPuff(rig.paddleTip.getWorldPosition(this.tipPos));
+    });
     bus.on('rallyEnd', (e) => {
       this.stats.bestRally = Math.max(this.stats.bestRally, e.shots);
+      this.matchBestRally = Math.max(this.matchBestRally, e.shots);
       this.onRallyEnd(e.outcome, e.shots);
     });
   }
@@ -354,6 +582,10 @@ export class GameManager {
   private bindGlobalInput(): void {
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Escape' || e.code === 'KeyP') this.togglePause();
+      if (e.code === 'KeyM' && !e.repeat) {
+        this.audio.setMuted(!this.audio.muted);
+        this.updatePauseMuteBtn();
+      }
       if (e.code === 'Backquote' || e.code === 'F3') {
         this.debug = !this.debug;
         if (!this.debug && !this.frozen) this.hud.setDebug(null);
@@ -399,6 +631,7 @@ export class GameManager {
       } else {
         this.audio.setMuted(false);
       }
+      this.updatePauseMuteBtn();
     });
   }
 
@@ -412,6 +645,16 @@ export class GameManager {
       platform.onGameplayStop();
     }
     this.audio.play('click');
+  }
+
+  private updatePauseMuteBtn(): void {
+    const btn = this.overlays?.pause?.querySelector<HTMLElement>('[data-a="mute"]');
+    if (btn) btn.textContent = this.audio.muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
+  }
+
+  private updatePauseFxBtn(): void {
+    const btn = this.overlays?.pause?.querySelector<HTMLElement>('[data-a="fx"]');
+    if (btn) btn.textContent = this.reducedFx ? 'EFFECTS: REDUCED' : 'EFFECTS: FULL';
   }
 
   private startPlaying(): void {
@@ -436,12 +679,13 @@ export class GameManager {
       <div class="controls-help">
         <span class="kbd">W A S D</span> move &nbsp; <span class="kbd">SHIFT</span> sprint &nbsp;
         <span class="kbd">SPACE</span> / <span class="kbd">CLICK</span> swing<br/>
-        Point the mouse at the far court to aim &nbsp;·&nbsp; <span class="kbd">ESC</span> pause &nbsp;·&nbsp; <span class="kbd">\`</span> debug &nbsp;·&nbsp; <span class="kbd">F</span> freeze<br/>
+        Point the mouse at the far court to aim &nbsp;·&nbsp; <span class="kbd">ESC</span> pause &nbsp;·&nbsp; <span class="kbd">M</span> mute &nbsp;·&nbsp; <span class="kbd">\`</span> debug &nbsp;·&nbsp; <span class="kbd">F</span> freeze<br/>
         Mobile: left thumb moves, tap or swipe on the right to hit
       </div>`;
     title.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-target],[data-a]');
       if (btn?.dataset.target) {
+        this.audio.unlock();
         this.setTarget(Number(btn.dataset.target) as MatchTarget);
         this.audio.play('click');
       } else if (btn?.dataset.a === 'play') {
@@ -454,6 +698,8 @@ export class GameManager {
     pause.innerHTML = `<div class="panel"><div class="logo" style="font-size:40px">PAUSED</div>
       <button class="btn" data-a="resume">RESUME</button>
       <button class="btn secondary" data-a="restart">RESTART</button>
+      <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
+      <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
       <button class="btn secondary" data-a="menu">MAIN MENU</button></div>`;
     pause.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).dataset.a;
@@ -462,13 +708,22 @@ export class GameManager {
         this.fsm.resume();
         this.newMatch();
       }
+      if (a === 'mute') {
+        this.audio.setMuted(!this.audio.muted);
+        this.updatePauseMuteBtn();
+      }
+      if (a === 'fx') {
+        this.setReducedEffects(!this.reducedFx);
+        this.audio.play('click');
+      }
       if (a === 'menu') this.goToMenu();
     });
 
     const matchOver = document.createElement('div');
-    matchOver.className = 'overlay dim hidden';
+    matchOver.className = 'overlay dim match-over hidden';
     matchOver.innerHTML = `<div class="panel">
       <div class="result logo" style="font-size:44px"></div>
+      <div class="best-rally hidden"></div>
       <div class="final"></div>
       <div class="sub"></div>
       <button class="btn" data-a="again">PLAY AGAIN</button>
@@ -486,6 +741,55 @@ export class GameManager {
 
   // ---------------------------------------------------------------- presentation helpers
 
+  /** Every 5 shots: callout, hotter rally counter; crowd tension follows the rally length. */
+  private rallyMilestone(shots: number): void {
+    this.crowd?.setTension(shots / 15);
+    if (shots === 0 || shots % MILESTONE_EVERY !== 0) return;
+    const n = shots / MILESTONE_EVERY;
+    this.hud.callout(MILESTONE_CALLS[Math.min(n, MILESTONE_CALLS.length) - 1], Math.min(3, n));
+    this.hud.setRallyHeat(Math.min(3, n));
+  }
+
+  /** Dust at the feet on a hard push-off (sprint start or sharp change of direction). */
+  private updateFootwork(a: Athlete, dt: number): void {
+    const fw = this.footwork.get(a)!;
+    if (dt <= 0) return;
+    fw.cooldown -= dt;
+    const d = this.scratch.subVectors(a.vel, fw.lag).setY(0);
+    fw.lag.lerp(a.vel, 1 - Math.exp(-10 * dt));
+    if (fw.cooldown > 0 || d.length() < FOOT_KICK || Math.hypot(a.vel.x, a.vel.z) < 1.2) return;
+    fw.cooldown = FOOT_COOLDOWN;
+    this.effects.footDust(a.pos, d.normalize());
+  }
+
+  /** Projects a world point to client (CSS px) coordinates in `out`; false if behind the camera. */
+  private toScreen(p: THREE.Vector3, out: THREE.Vector3): boolean {
+    out.copy(p).project(this.sceneMgr.camera);
+    if (out.z > 1) return false;
+    const rect = this.sceneMgr.renderer.domElement.getBoundingClientRect();
+    out.set(rect.left + ((out.x + 1) / 2) * rect.width, rect.top + ((1 - out.y) / 2) * rect.height, 0);
+    out.x = Math.min(rect.right - 24, Math.max(rect.left + 24, out.x));
+    out.y = Math.min(rect.bottom - 24, Math.max(rect.top + 24, out.y));
+    return true;
+  }
+
+  /** Final score ticks up from 0–0 (instant under reduce-effects). */
+  private countUpFinal(el: HTMLElement, hero: number, rival: number): void {
+    const show = (k: number) => (el.textContent = `${Math.round(hero * k)} – ${Math.round(rival * k)}`);
+    if (this.reducedFx) {
+      show(1);
+      return;
+    }
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const k = Math.min(1, (now - t0) / 900);
+      show(1 - Math.pow(1 - k, 3));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    show(0);
+    requestAnimationFrame(step);
+  }
+
   private updateIndicators(dt: number): void {
     const r = this.rally;
     const intent = this.heroCtl.intent;
@@ -496,10 +800,11 @@ export class GameManager {
       const a = heroServing ? clampServeAim(r.serveFromRight, intent.aimX, intent.aimDepth) : { aimX: intent.aimX, aimDepth: intent.aimDepth };
       aim = aimToWorld(this.hero.side, a.aimX, a.aimDepth);
     }
-    let landing: { x: number; z: number; good: boolean } | null = null;
+    let landing: LandingMarker | null = null;
     if (this.landing && r.phase === 'live') {
       const d = Math.hypot(this.landing.x - this.hero.pos.x, this.landing.z - this.hero.pos.z);
-      landing = { ...this.landing, good: d < PLAYER.REACH + 0.6 };
+      const remaining01 = 1 - (r.time - this.landingAt) / this.landingFlight;
+      landing = { ...this.landing, good: d < PLAYER.REACH + 0.6, remaining01 };
     }
     this.indicators.update(dt, aim, landing);
   }

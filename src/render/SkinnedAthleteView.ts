@@ -4,14 +4,10 @@ import type { Athlete } from '../players/Athlete';
 import { PLAYER } from '../utils/Constants';
 import { clamp, damp } from '../utils/MathUtils';
 import { cloneAthlete, findBones, type BoneKey } from './AthleteModel';
-import { addGroundDecals, SwingPose, type AthleteLook, type AthleteRig } from './AthleteView';
-import { buildPaddle, type PaddleLook } from './PaddleModel';
+import { addGroundDecals, MarkerPulse, SwingPose, type AthleteLook, type AthleteRig, type Reaction } from './AthleteView';
+import { buildPaddle, PADDLE_FACE_CENTER, type PaddleLook } from './PaddleModel';
 
-/** Rendered height of the (big-headed) Quaternius character, in metres. */
-const MODEL_HEIGHT = 2.0;
-const PADDLE_SCALE = 1.3;
-/** Paddle centre measured from the butt of the handle (see PaddleModel), before scaling. */
-const PADDLE_CENTER = 0.13 + 0.27 / 2;
+const { MODEL_HEIGHT, PADDLE_SCALE } = PLAYER;
 
 const DOWN = new THREE.Vector3(0, -1, 0);
 
@@ -23,6 +19,7 @@ const DOWN = new THREE.Vector3(0, -1, 0);
  */
 export class SkinnedAthleteView implements AthleteRig {
   readonly root = new THREE.Group();
+  readonly paddleTip = new THREE.Object3D();
   private body = new THREE.Group();
   private model: THREE.Object3D;
   private bones: Record<BoneKey, THREE.Bone>;
@@ -31,6 +28,7 @@ export class SkinnedAthleteView implements AthleteRig {
   private run: THREE.AnimationAction;
   private holder = new THREE.Group();
   private marker: THREE.Mesh | null;
+  private markerPulse: MarkerPulse;
   private pose = new SwingPose();
   private shoulderY: number;
   private reach: number;
@@ -79,7 +77,7 @@ export class SkinnedAthleteView implements AthleteRig {
     const elbow = lowerArmR.getWorldPosition(new THREE.Vector3());
     const fist = fistR.getWorldPosition(new THREE.Vector3());
     this.shoulderY = shoulder.y;
-    this.reach = shoulder.distanceTo(elbow) + elbow.distanceTo(fist) + PADDLE_CENTER * PADDLE_SCALE;
+    this.reach = shoulder.distanceTo(elbow) + elbow.distanceTo(fist) + PADDLE_FACE_CENTER * PADDLE_SCALE;
 
     // Same paddle mounting as the primitive model's hand, in the arm's frame.
     const mount = new THREE.Group();
@@ -88,17 +86,21 @@ export class SkinnedAthleteView implements AthleteRig {
     mount.rotateX(-0.25);
     const pad = buildPaddle(paddle);
     pad.scale.setScalar(PADDLE_SCALE);
+    this.paddleTip.position.y = PADDLE_FACE_CENTER;
+    pad.add(this.paddleTip);
     mount.add(pad);
     this.holder.add(mount);
     this.body.add(this.holder);
 
     this.marker = addGroundDecals(this.root, markerColor);
+    this.markerPulse = new MarkerPulse(this.marker);
     scene.add(this.root);
   }
 
   update(a: Athlete, dt: number): void {
     this.root.position.set(a.pos.x, 0, a.pos.z);
     this.body.rotation.y = a.facing;
+    this.markerPulse.update(dt);
 
     const sin = Math.sin(a.facing);
     const cos = Math.cos(a.facing);
@@ -112,15 +114,16 @@ export class SkinnedAthleteView implements AthleteRig {
     this.idle.setEffectiveWeight(1 - runWeight);
     this.run.timeScale = (fwd < -0.3 * speed ? -1 : 1) * clamp(run, 0.6, 1.3);
     this.mixer.update(dt);
-    this.root.updateMatrixWorld(true);
 
     this.pose.update(a, dt, this.shoulderY, this.reach);
     this.lean = damp(this.lean, clamp(fwd * 0.05, -0.15, 0.25), 10, dt);
-    const { torsoTwist, armYaw, armPitch } = this.pose;
+    const { torsoTwist, armYaw, armPitch, bodyLift, dip, torsoBend, headDrop } = this.pose;
+    this.body.position.y = bodyLift; // the clip owns the legs, so the wind-up dip is a torso bend only
+    this.root.updateMatrixWorld(true);
     this.body.getWorldQuaternion(this.bodyQ);
 
-    // Torso: lean + twist about the body's axes, on top of the clip.
-    this.torsoQ.setFromEuler(this.euler.set(-this.lean, torsoTwist, 0, 'XYZ'));
+    // Torso: lean + twist about the body's axes, on top of the clip (no head bone: the nod rides on it).
+    this.torsoQ.setFromEuler(this.euler.set(-this.lean - torsoBend - headDrop * 0.4 - dip * 0.8, torsoTwist, 0, 'XYZ'));
     this.rotateBoneInBody(this.bones.torso, this.torsoQ);
     this.bones.torso.updateMatrixWorld(true);
 
@@ -138,6 +141,18 @@ export class SkinnedAthleteView implements AthleteRig {
 
   setMarkerVisible(v: boolean): void {
     if (this.marker) this.marker.visible = v;
+  }
+
+  setMarkerPulse(v: boolean): void {
+    this.markerPulse.active = v;
+  }
+
+  react(kind: Reaction): void {
+    this.pose.react(kind);
+  }
+
+  onHit(intensity: number): void {
+    this.pose.onHit(intensity);
   }
 
   /** Applies a rotation expressed in the body's frame to a bone's current (animated) pose. */

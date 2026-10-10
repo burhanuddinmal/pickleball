@@ -18,12 +18,13 @@ export interface RallyEvents extends Record<string, unknown> {
   rallyEnd: { outcome: RallyOutcome; shots: number };
   serveStart: { server: Athlete; fromRight: boolean };
   swing: { athlete: Athlete };
+  /** A swing finished; `contact` is false for a whiff. */
+  swingEnd: { athlete: Athlete; kind: SwingKind; contact: boolean };
 }
 
 /** Hard safety limit: a rally (or a held serve by the AI) can never run forever. */
 const MAX_RALLY_TIME = 60;
 const SERVE_DEPTH = COURT.HALF_LENGTH + 0.45;
-const SERVE_LATERAL = 1.25;
 
 /**
  * Runs a single rally: serve, live ball, paddle contacts and rally-ending judgement.
@@ -70,13 +71,13 @@ export class RallyManager {
     this.rallyTime = 0;
     this.outcome = null;
 
-    const lateral = fromRight ? SERVE_LATERAL : -SERVE_LATERAL;
+    const lateral = fromRight ? PLAYER.SERVE_LATERAL : -PLAYER.SERVE_LATERAL;
     for (const c of this.players) {
       const a = c.athlete;
       c.reset();
       const isServer = a === server;
       // Receiver stands in the diagonal court, which is also on *their* right when the server is on the right.
-      const p = sideToWorld(a.side, lateral, isServer ? SERVE_DEPTH : COURT.HALF_LENGTH - 0.15);
+      const p = sideToWorld(a.side, lateral, isServer ? SERVE_DEPTH : PLAYER.RECEIVE_DEPTH);
       a.pos.set(p.x, 0, p.z);
       a.facing = a.netYaw;
       a.holdingBall = isServer;
@@ -89,7 +90,7 @@ export class RallyManager {
           }
         : FREE_BOUNDS;
     }
-    this.ball.hold(this.handPosition(server, 0.95));
+    this.ball.hold(this.handPosition(server, PLAYER.SERVE_HOLD_HEIGHT));
     this.bus.emit('serveStart', { server, fromRight });
   }
 
@@ -99,7 +100,10 @@ export class RallyManager {
 
     for (const c of this.players) {
       const ctx = this.updateCtx(c);
+      const sw = c.athlete.swing;
+      const wasSwinging = sw.active;
       if (c.tick(ctx, dt)) this.bus.emit('swing', { athlete: c.athlete });
+      else if (wasSwinging && !sw.active) this.bus.emit('swingEnd', { athlete: c.athlete, kind: sw.kind, contact: sw.contact });
     }
 
     if (this.phase === 'serve') {
@@ -135,7 +139,7 @@ export class RallyManager {
     if (sw.active && sw.kind === 'serve') {
       // Drop the ball from the hand toward the contact height during the backswing.
       const k = Math.min(1, sw.t / PLAYER.SERVE_CONTACT_DELAY);
-      this.ball.hold(this.handPosition(s, 0.95 + (PLAYER.SERVE_CONTACT_HEIGHT - 0.95) * k));
+      this.ball.hold(this.handPosition(s, PLAYER.SERVE_HOLD_HEIGHT + (PLAYER.SERVE_CONTACT_HEIGHT - PLAYER.SERVE_HOLD_HEIGHT) * k));
       if (sw.t >= PLAYER.SERVE_CONTACT_DELAY && !sw.contact) {
         const intent = this.controllerFor(s).intent;
         const contact = this.ball.state.pos.clone();
@@ -149,7 +153,7 @@ export class RallyManager {
         this.registerHit(s, 'serve', 'forehand');
       }
     } else {
-      this.ball.hold(this.handPosition(s, 0.95));
+      this.ball.hold(this.handPosition(s, PLAYER.SERVE_HOLD_HEIGHT));
       if (this.rallyTime > MAX_RALLY_TIME) this.rallyTime = 0;
     }
   }
@@ -213,7 +217,7 @@ export class RallyManager {
 
   private handPosition(a: Athlete, height: number): Vector3 {
     // In front of the body, on the paddle (right-hand) side.
-    return this.hand.set(a.pos.x + a.side * 0.38, height, a.pos.z - a.side * 0.32);
+    return this.hand.set(a.pos.x + a.side * 0.32, height, a.pos.z - a.side * 0.28);
   }
 
   private createCtx(c: PlayerController): InputContext {

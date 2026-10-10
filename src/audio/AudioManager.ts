@@ -1,8 +1,14 @@
 export type SoundId = 'hit' | 'softHit' | 'powerHit' | 'bounce' | 'net' | 'pointWon' | 'pointLost' | 'click' | 'serve';
+export type BgmTrack = 'menu' | 'match';
+
+const BGM_PATHS: Record<BgmTrack, string> = {
+  menu: `${import.meta.env.BASE_URL}audio/menu.mp3`,
+  match: `${import.meta.env.BASE_URL}audio/match.mp3`,
+};
 
 /**
- * Procedural WebAudio sound effects. Each SoundId maps to a synth recipe today; the same IDs can
- * later be mapped to sample files without touching gameplay code.
+ * Audio manager handling procedural WebAudio sound effects alongside
+ * background music streams with crossfading, volume ducking, and browser autoplay unlocks.
  */
 export class AudioManager {
   private ctx: AudioContext | null = null;
@@ -10,31 +16,209 @@ export class AudioManager {
   private sfx: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   sfxVolume = 0.8;
+  bgmVolume = 0.35;
   muted = false;
+
+  private currentBgm: BgmTrack | null = null;
+  private pendingBgm: BgmTrack | null = null;
+  private ducked = false;
+  private bgmAudios: Map<BgmTrack, HTMLAudioElement> = new Map();
+  private fadeInterval: number | null = null;
+
+  constructor() {
+    this.bindAutoUnlock();
+  }
+
+  /**
+   * Automatically unlocks audio context & starts queued BGM on first user interaction anywhere.
+   */
+  private bindAutoUnlock(): void {
+    if (typeof window === 'undefined') return;
+    const onFirstGesture = () => {
+      this.unlock();
+      window.removeEventListener('pointerdown', onFirstGesture);
+      window.removeEventListener('keydown', onFirstGesture);
+    };
+    window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
+    window.addEventListener('keydown', onFirstGesture, { once: true, passive: true });
+  }
 
   /** Must be called from a user gesture (browser autoplay policy). */
   unlock(): void {
     if (this.ctx) {
       void this.ctx.resume();
-      return;
+    } else {
+      const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (Ctx) {
+        this.ctx = new Ctx();
+        this.master = this.ctx.createGain();
+        this.master.connect(this.ctx.destination);
+        this.sfx = this.ctx.createGain();
+        this.sfx.connect(this.master);
+        this.applyVolume();
+        const len = this.ctx.sampleRate * 0.5;
+        this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+        const d = this.noise.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      }
     }
-    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-    this.ctx = new Ctx();
-    this.master = this.ctx.createGain();
-    this.master.connect(this.ctx.destination);
-    this.sfx = this.ctx.createGain();
-    this.sfx.connect(this.master);
-    this.applyVolume();
-    const len = this.ctx.sampleRate * 0.5;
-    this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const d = this.noise.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+
+    if (this.pendingBgm) {
+      const track = this.pendingBgm;
+      this.pendingBgm = null;
+      this.playBgm(track);
+    } else if (this.currentBgm) {
+      const audio = this.bgmAudios.get(this.currentBgm);
+      if (audio && audio.paused) {
+        audio.volume = this.targetBgmVolume();
+        void audio.play().catch(() => {});
+      }
+    }
   }
 
   setMuted(m: boolean): void {
     this.muted = m;
     this.applyVolume();
+    this.applyBgmVolume();
+  }
+
+  setBgmVolume(v: number): void {
+    this.bgmVolume = Math.max(0, Math.min(1, v));
+    this.applyBgmVolume();
+  }
+
+  setDucked(ducked: boolean): void {
+    if (this.ducked === ducked) return;
+    this.ducked = ducked;
+    this.applyBgmVolume();
+  }
+
+  private targetBgmVolume(): number {
+    if (this.muted) return 0;
+    return this.ducked ? this.bgmVolume * 0.28 : this.bgmVolume;
+  }
+
+  private applyBgmVolume(): void {
+    if (this.fadeInterval !== null) return;
+    if (this.currentBgm) {
+      const audio = this.bgmAudios.get(this.currentBgm);
+      if (audio) {
+        audio.volume = this.targetBgmVolume();
+      }
+    }
+  }
+
+  private getOrCreateBgmAudio(track: BgmTrack): HTMLAudioElement {
+    let audio = this.bgmAudios.get(track);
+    if (!audio) {
+      audio = new Audio(BGM_PATHS[track]);
+      audio.loop = true;
+      audio.preload = 'auto';
+      this.bgmAudios.set(track, audio);
+    }
+    return audio;
+  }
+
+  /**
+   * Switches or starts the given BGM track with an optional crossfade.
+   * If the track is already actively playing, this is a no-op.
+   */
+  playBgm(track: BgmTrack, crossfadeMs = 700): void {
+    if (typeof window === 'undefined') return;
+
+    if (this.currentBgm === track) {
+      const existing = this.bgmAudios.get(track);
+      if (existing && existing.paused) {
+        existing.volume = this.targetBgmVolume();
+        void existing.play().catch(() => {
+          this.pendingBgm = track;
+        });
+      }
+      return;
+    }
+
+    const prevTrack = this.currentBgm;
+    this.currentBgm = track;
+    const outgoing = prevTrack ? this.bgmAudios.get(prevTrack) : null;
+    const incoming = this.getOrCreateBgmAudio(track);
+
+    if (this.fadeInterval !== null) {
+      window.clearInterval(this.fadeInterval);
+      this.fadeInterval = null;
+    }
+
+    const targetVol = this.targetBgmVolume();
+    incoming.currentTime = 0;
+    incoming.volume = outgoing ? 0 : targetVol;
+
+    const playPromise = incoming.play();
+    if (playPromise) {
+      playPromise.catch(() => {
+        // Autoplay policy prevented playback until gesture
+        this.pendingBgm = track;
+      });
+    }
+
+    if (!outgoing) {
+      incoming.volume = targetVol;
+      return;
+    }
+
+    // Crossfade between outgoing and incoming
+    const startOutgoingVol = outgoing.volume;
+    const startTime = performance.now();
+    this.fadeInterval = window.setInterval(() => {
+      const elapsed = performance.now() - startTime;
+      const progress = Math.min(1, elapsed / crossfadeMs);
+
+      incoming.volume = progress * this.targetBgmVolume();
+      outgoing.volume = Math.max(0, (1 - progress) * startOutgoingVol);
+
+      if (progress >= 1) {
+        if (this.fadeInterval !== null) {
+          window.clearInterval(this.fadeInterval);
+          this.fadeInterval = null;
+        }
+        outgoing.pause();
+        outgoing.currentTime = 0;
+        incoming.volume = this.targetBgmVolume();
+      }
+    }, 25);
+  }
+
+  stopBgm(fadeMs = 400): void {
+    if (!this.currentBgm) return;
+    const active = this.bgmAudios.get(this.currentBgm);
+    this.currentBgm = null;
+    this.pendingBgm = null;
+    if (!active) return;
+
+    if (this.fadeInterval !== null) {
+      window.clearInterval(this.fadeInterval);
+      this.fadeInterval = null;
+    }
+
+    if (fadeMs <= 0) {
+      active.pause();
+      active.currentTime = 0;
+      return;
+    }
+
+    const startVol = active.volume;
+    const startTime = performance.now();
+    this.fadeInterval = window.setInterval(() => {
+      const elapsed = performance.now() - startTime;
+      const progress = Math.min(1, elapsed / fadeMs);
+      active.volume = Math.max(0, (1 - progress) * startVol);
+      if (progress >= 1) {
+        if (this.fadeInterval !== null) {
+          window.clearInterval(this.fadeInterval);
+          this.fadeInterval = null;
+        }
+        active.pause();
+        active.currentTime = 0;
+      }
+    }, 25);
   }
 
   private applyVolume(): void {

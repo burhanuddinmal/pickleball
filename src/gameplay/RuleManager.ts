@@ -30,6 +30,18 @@ export function isInsideCourt(x: number, z: number, tol = LINE_TOLERANCE): boole
 }
 
 /**
+ * Distance (m) from a ground point to the nearest sideline or baseline segment. Used for
+ * presentation only ("close call" highlights); judging uses isInsideCourt().
+ */
+export function distanceToNearestLine(x: number, z: number): number {
+  const ax = Math.abs(x);
+  const az = Math.abs(z);
+  const side = Math.hypot(ax - COURT.HALF_WIDTH, Math.max(0, az - COURT.HALF_LENGTH));
+  const base = Math.hypot(az - COURT.HALF_LENGTH, Math.max(0, ax - COURT.HALF_WIDTH));
+  return Math.min(side, base);
+}
+
+/**
  * Judges a bounce. `bounceIndex` is 1 for the first bounce after the last paddle contact.
  * Returns an outcome if the bounce ends the rally, otherwise null.
  */
