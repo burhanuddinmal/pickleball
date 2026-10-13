@@ -261,6 +261,10 @@ export class AndroidAdapter implements PlatformAdapter {
     this.backListeners.push(cb);
   }
 
+  exitApp(): void {
+    if (Capacitor.isNativePlatform()) void App.exitApp();
+  }
+
   vibrate(pattern: number | number[] = 25): void {
     if (Capacitor.isNativePlatform()) {
       try {

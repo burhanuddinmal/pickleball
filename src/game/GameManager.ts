@@ -50,6 +50,14 @@ const SLOWMO = { seconds: 0.6, scale: 0.35, minShots: 10 };
 /** Footwork dust: velocity change (m/s) against a lagged velocity that counts as a hard push-off. */
 const FOOT_KICK = 2.6;
 const FOOT_COOLDOWN = 0.35;
+/** Title-screen demo: pause (s) between demo points, and how loud its sounds are under the menu music. */
+const DEMO_POINT_PAUSE = 1.6;
+const DEMO_SFX_GAIN = 0.45;
+const DIFFICULTIES = Object.keys(AI_PROFILES) as Difficulty[];
+/** Menu art cut from the sheets in public/assets/images by scripts/extract-menu-assets.py. */
+const UI_ART = `${import.meta.env.BASE_URL}assets/ui/`;
+/** Debug overlay and freeze-frame keys are dev-build only. */
+const DEV = import.meta.env.DEV;
 
 /** Per-athlete state for footwork dust detection. */
 interface Footwork {
@@ -70,7 +78,12 @@ export class GameManager {
   private hero: Athlete;
   private rival: Athlete;
   private heroCtl: PlayerController;
+  private rivalCtl: PlayerController;
   private ai: AIController;
+  /** Title-screen demo: these AIs play both sides behind the menu. */
+  private demoHero = new AIController(AI_PROFILES.hard, (Date.now() & 0xffff) + 2);
+  private demoRival = new AIController(AI_PROFILES.hard, (Date.now() & 0xffff) + 3);
+  private demoTimer = 0;
   private local: LocalInputProvider;
   private touch: TouchControls;
   private rally: RallyManager;
@@ -89,6 +102,8 @@ export class GameManager {
   private hud: HUD;
   private uiRoot: HTMLElement;
   private overlays: { title: HTMLElement; pause: HTMLElement; matchOver: HTMLElement };
+  /** Open title-screen dialog ("settings" / "howto"), if any. */
+  private menuModal: HTMLElement | null = null;
 
   private accumulator = 0;
   private lastFrame = 0;
@@ -107,7 +122,8 @@ export class GameManager {
   private bestAtMatchStart = 0;
   private footwork = new Map<Athlete, Footwork>();
   private target: MatchTarget = 11;
-  private stats = { matchesPlayed: 0, matchesWon: 0, bestRally: 0 };
+  private difficulty: Difficulty = 'medium';
+  private stats = { matchesPlayed: 0, matchesWon: 0, bestRally: 0, winStreak: 0, bestStreak: 0 };
   /** Platform-saved free-form data, kept so saving one key doesn't drop the others. */
   private customData: Record<string, unknown> = {};
   /** "Reduce effects": no camera kicks, hit-stop, flashes or HUD pops. */
@@ -145,8 +161,8 @@ export class GameManager {
     this.local = new LocalInputProvider(this.sceneMgr.renderer.domElement, this.pickGround, this.touch);
     this.ai = new AIController(AI_PROFILES.medium, (Date.now() & 0xffff) + 1);
     this.heroCtl = new PlayerController(this.hero, this.local);
-    const rivalCtl = new PlayerController(this.rival, this.ai);
-    this.rally = new RallyManager([this.heroCtl, rivalCtl], new Rng(Date.now() & 0xffffff));
+    this.rivalCtl = new PlayerController(this.rival, this.ai);
+    this.rally = new RallyManager([this.heroCtl, this.rivalCtl], new Rng(Date.now() & 0xffffff));
 
     this.ballView = new BallView(scene);
     const athleteView = (look: AthleteLook, paddle: PaddleLook, marker?: string): AthleteRig =>
@@ -167,15 +183,19 @@ export class GameManager {
     this.hud = new HUD(uiRoot, 'You', 'CPU');
     this.overlays = this.buildOverlays();
     this.setTarget(this.target, false);
+    this.setDifficulty(this.difficulty, false);
     this.setReducedEffects(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false, false);
+    this.syncVolumeSliders();
+    this.renderStats();
     this.bindRallyEvents();
     this.bindGlobalInput();
     this.bindPlatformEvents();
     this.fsm.onChange((to) => this.onStateChange(to));
 
-    // Show the court behind the title screen.
+    // A demo rally plays on the court behind the title screen.
     this.nextServer = this.hero;
-    this.rally.startServe(this.hero, true);
+    this.setDemoInputs(true);
+    this.serveDemo();
     this.cameraRig.snap(this.cameraFocus());
     onProgress(1);
   }
@@ -190,12 +210,26 @@ export class GameManager {
         if (saved.matchesPlayed !== undefined) this.stats.matchesPlayed = saved.matchesPlayed;
         if (saved.matchesWon !== undefined) this.stats.matchesWon = saved.matchesWon;
         if (saved.bestRally !== undefined) this.stats.bestRally = saved.bestRally;
+        if (saved.winStreak !== undefined) this.stats.winStreak = saved.winStreak;
+        if (saved.bestStreak !== undefined) this.stats.bestStreak = saved.bestStreak;
+        if (saved.difficulty && saved.difficulty in AI_PROFILES) this.setDifficulty(saved.difficulty as Difficulty, false);
         if (saved.customData) this.customData = { ...saved.customData };
         if (typeof this.customData.reducedEffects === 'boolean') this.setReducedEffects(this.customData.reducedEffects, false);
+        const { musicVolume, sfxVolume } = this.customData;
+        if (typeof musicVolume === 'number') this.audio.setBgmVolume(musicVolume);
+        if (typeof sfxVolume === 'number') this.audio.setSfxVolume(sfxVolume);
+        this.syncVolumeSliders();
+        this.renderStats();
       }
     } catch (err) {
       console.warn('[GameManager] Failed to load progress from platform:', err);
     }
+  }
+
+  /** Merges `patch` into the platform-saved free-form data. */
+  private saveCustom(patch: Record<string, unknown>): void {
+    this.customData = { ...this.customData, ...patch };
+    void platform.saveProgress({ customData: this.customData });
   }
 
   /** Toggles motion-heavy effects (camera kicks and shake, hit-stop, flashes, HUD pops). */
@@ -207,16 +241,18 @@ export class GameManager {
     this.effects.flashEnabled = !v;
     this.netView.flashEnabled = !v;
     this.uiRoot.classList.toggle('reduce-fx', v);
-    this.updatePauseFxBtn();
-    if (persist) {
-      this.customData = { ...this.customData, reducedEffects: v };
-      void platform.saveProgress({ customData: this.customData });
-    }
+    this.updateFxBtns();
+    if (persist) this.saveCustom({ reducedEffects: v });
   }
 
-  /** Simple difficulty switch (full menu flow arrives in Phase 5). */
-  setDifficulty(d: Difficulty): void {
+  /** Sets the CPU opponent's skill (picked on the title screen). */
+  setDifficulty(d: Difficulty, persist = true): void {
+    this.difficulty = d;
     this.ai.profile = AI_PROFILES[d];
+    if (persist) void platform.saveProgress({ difficulty: d });
+    for (const b of this.overlays.title.querySelectorAll<HTMLElement>('[data-difficulty]')) {
+      b.classList.toggle('selected', b.dataset.difficulty === d);
+    }
   }
 
   start(): void {
@@ -265,9 +301,12 @@ export class GameManager {
   };
 
   private tick(dt: number): void {
-    // On the title screen the rally sits idle with the hero holding the ball.
-    if (this.fsm.state === GameStateId.MAIN_MENU) return;
     this.rally.tick(dt);
+    // Title-screen demo: the next demo point starts a moment after the last one ended.
+    if (this.fsm.state === GameStateId.MAIN_MENU) {
+      if (this.rally.phase === 'dead' && (this.demoTimer -= dt) <= 0) this.serveDemo();
+      return;
+    }
     if (this.fsm.state === GameStateId.POINT_END) {
       this.pointTimer -= dt;
       if (this.pointTimer <= 0) this.afterPoint();
@@ -289,7 +328,7 @@ export class GameManager {
     this.ambient?.update(worldDt);
     this.updateFootwork(this.hero, worldDt);
     this.updateFootwork(this.rival, worldDt);
-    this.heroView.setMarkerPulse(r.phase === 'live' && r.lastHitter !== this.hero);
+    this.heroView.setMarkerPulse(r.phase === 'live' && r.lastHitter !== this.hero && this.fsm.state !== GameStateId.MAIN_MENU);
     this.cameraRig.update(this.cameraFocus(), dt);
     this.effects.update(worldDt, camera, renderer.domElement.height);
     this.updateIndicators(dt);
@@ -340,7 +379,7 @@ export class GameManager {
     el.querySelector('.result')!.textContent = heroWon ? 'YOU WIN!' : 'CPU WINS';
     el.querySelector('.result')!.classList.toggle('win', heroWon);
     this.countUpFinal(el.querySelector('.final')!, this.tally.hero, this.tally.rival);
-    el.querySelector('.sub')!.textContent = `Game to ${this.target} · win by 2`;
+    el.querySelector('.sub')!.textContent = `Game to ${this.target} · win by 2 · ${this.difficulty.toUpperCase()} CPU`;
     const best = el.querySelector<HTMLElement>('.best-rally')!;
     const newBest = this.matchBestRally > this.bestAtMatchStart && this.matchBestRally >= 4;
     best.classList.toggle('hidden', !newBest);
@@ -360,7 +399,10 @@ export class GameManager {
     void platform.submitScore(this.tally.hero);
     this.stats.matchesPlayed = (this.stats.matchesPlayed ?? 0) + 1;
     if (heroWon) this.stats.matchesWon = (this.stats.matchesWon ?? 0) + 1;
+    this.stats.winStreak = heroWon ? this.stats.winStreak + 1 : 0;
+    this.stats.bestStreak = Math.max(this.stats.bestStreak, this.stats.winStreak);
     void platform.saveProgress(this.stats);
+    this.renderStats();
 
     if (platform.capabilities.ads) {
       void platform.showInterstitialAd();
@@ -386,13 +428,41 @@ export class GameManager {
     this.hud.hideBanner();
     this.hud.setGamePoint(null);
     this.fsm.go(GameStateId.MAIN_MENU);
+    this.effects.clearConfetti();
+    this.hitStop.clear();
+    this.setDemoInputs(true);
+    this.serveDemo();
+    this.renderStats();
+    this.cameraRig.snap(this.cameraFocus());
+  }
+
+  /** Title-screen demo: the demo AIs take over both players (`false` hands them back). */
+  private setDemoInputs(on: boolean): void {
+    this.heroCtl.input = on ? this.demoHero : this.local;
+    this.rivalCtl.input = on ? this.demoRival : this.ai;
+  }
+
+  /** Starts the next demo point behind the title screen (random server and court). */
+  private serveDemo(): void {
     this.ballView.resetTrail();
     this.lineCalls.clear();
     this.clearPointMoments();
-    this.effects.clearConfetti();
-    this.hitStop.clear();
-    this.rally.startServe(this.hero, true);
-    this.cameraRig.snap(this.cameraFocus());
+    this.rally.startServe(Math.random() < 0.5 ? this.hero : this.rival, Math.random() < 0.5);
+  }
+
+  /** Career numbers on the title screen; hidden until there is something to show. */
+  private renderStats(): void {
+    const el = this.overlays.title.querySelector<HTMLElement>('.menu-stats')!;
+    const { matchesPlayed: played, matchesWon: won, bestRally, winStreak, bestStreak } = this.stats;
+    el.classList.toggle('hidden', played === 0 && bestRally === 0);
+    const tile = (icon: string, label: string, value: string | number, note = '') =>
+      `<div class="stat"><img class="stat-icon" src="${UI_ART}icon-${icon}.png" alt="" /><div class="stat-value">${value}</div><div class="stat-label">${label}${note ? ` <small>${note}</small>` : ''}</div></div>`;
+    el.innerHTML = [
+      tile('wins', 'RECORD', `${won}–${played - won}`),
+      tile('winrate', 'WIN RATE', played ? `${Math.round((won / played) * 100)}%` : '–'),
+      tile('rally', 'BEST RALLY', bestRally),
+      tile('streak', 'STREAK', winStreak, bestStreak > winStreak ? `best ${bestStreak}` : ''),
+    ].join('');
   }
 
   private setTarget(t: MatchTarget, persist = true): void {
@@ -413,9 +483,10 @@ export class GameManager {
     this.overlays.title.classList.toggle('hidden', to !== GameStateId.MAIN_MENU);
     this.overlays.pause.classList.toggle('hidden', to !== GameStateId.PAUSED);
     this.overlays.matchOver.classList.toggle('hidden', to !== GameStateId.MATCH_OVER);
+    if (to !== GameStateId.MAIN_MENU) this.closeMenuModal();
     if (to === GameStateId.PAUSED) {
       this.accumulator = 0;
-      this.updatePauseMuteBtn();
+      this.updateMuteBtns();
     }
 
     switch (to) {
@@ -504,24 +575,32 @@ export class GameManager {
 
   private bindRallyEvents(): void {
     const bus = this.rally.bus;
+    // Behind the title screen the demo keeps sounds (quieter), particles and the crowd, but none
+    // of the camera / time / HUD feedback, haptics or stats.
+    const demo = () => this.fsm.state === GameStateId.MAIN_MENU;
+    const gain = () => (demo() ? DEMO_SFX_GAIN : 1);
     bus.on('hit', (e) => {
       const pan = e.pos.x / 6;
       const intensity = Math.min(1, e.speed / 22);
       const power = intensity > 0.75;
       (e.athlete === this.hero ? this.heroView : this.rivalView).onHit(intensity);
-      this.audio.play(e.kind === 'serve' ? 'serve' : power ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan);
+      this.audio.play(e.kind === 'serve' ? 'serve' : power ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan, gain());
+      const vel = this.rally.ball.state.vel;
+      this.effects.hitBurst(e.pos, vel, intensity);
+      this.ballView.onHit(vel, intensity);
+      this.ballView.resetTrail();
+      if (demo()) {
+        this.crowd?.setTension(e.shotIndex / 15);
+        return;
+      }
       // Kick on every hero contact (felt in the hands), and on any power shot.
       const kick = Math.max(power ? 0.45 : 0, e.athlete === this.hero ? 0.2 + 0.2 * intensity : 0);
       if (kick > 0) this.cameraRig.impulse(kick);
       if (e.kind === 'stroke') this.hitStop.trigger(power ? 0.07 : intensity > 0.45 ? 0.04 : 0);
       if (e.kind === 'stroke' && power) this.cameraRig.punch(1.5);
-      const vel = this.rally.ball.state.vel;
-      this.effects.hitBurst(e.pos, vel, intensity);
-      this.ballView.onHit(vel, intensity);
       if (e.athlete === this.hero && platform.capabilities.haptics) {
         platform.vibrate?.(intensity > 0.75 ? 35 : 15);
       }
-      this.ballView.resetTrail();
       if (this.fsm.state === GameStateId.SERVING) this.fsm.go(GameStateId.RALLY);
       this.hud.setRally(e.shotIndex);
       this.rallyMilestone(e.shotIndex);
@@ -538,7 +617,7 @@ export class GameManager {
       }
     });
     bus.on('bounce', (e) => {
-      this.audio.play('bounce', Math.min(1, e.speed / 8), e.pos.x / 6);
+      this.audio.play('bounce', Math.min(1, e.speed / 8), e.pos.x / 6, gain());
       this.effects.bounceBurst(e.pos, e.speed, e.inBounds);
       this.ballView.onBounce(e.speed);
       this.landing = null;
@@ -558,10 +637,10 @@ export class GameManager {
       }
     });
     bus.on('net', (e) => {
-      this.audio.play('net', 0.6, e.pos.x / 6);
+      this.audio.play('net', 0.6, e.pos.x / 6, gain());
       this.netView.onHit(e.pos.x, e.tape);
       this.effects.netPuff(e.pos, e.tape);
-      if (e.tape) {
+      if (e.tape && !demo()) {
         this.cameraRig.impulse(0.25);
         this.cameraRig.shake(0.35);
         this.crowd?.gasp();
@@ -573,6 +652,16 @@ export class GameManager {
       this.effects.whiffPuff(rig.paddleTip.getWorldPosition(this.tipPos));
     });
     bus.on('rallyEnd', (e) => {
+      if (demo()) {
+        const { winner } = e.outcome;
+        if (winner !== null) {
+          this.crowd?.cheer(0.5);
+          this.heroView.react(winner === this.hero.side ? 'win' : 'lose');
+          this.rivalView.react(winner === this.rival.side ? 'win' : 'lose');
+        }
+        this.demoTimer = DEMO_POINT_PAUSE;
+        return;
+      }
       this.stats.bestRally = Math.max(this.stats.bestRally, e.shots);
       this.matchBestRally = Math.max(this.matchBestRally, e.shots);
       this.onRallyEnd(e.outcome, e.shots);
@@ -581,26 +670,36 @@ export class GameManager {
 
   private bindGlobalInput(): void {
     window.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' && this.menuModal) {
+        this.closeMenuModal();
+        return;
+      }
       if (e.code === 'Escape' || e.code === 'KeyP') this.togglePause();
       if (e.code === 'KeyM' && !e.repeat) {
         this.audio.setMuted(!this.audio.muted);
-        this.updatePauseMuteBtn();
+        this.updateMuteBtns();
       }
-      if (e.code === 'Backquote' || e.code === 'F3') {
+      if (DEV && (e.code === 'Backquote' || e.code === 'F3')) {
         this.debug = !this.debug;
         if (!this.debug && !this.frozen) this.hud.setDebug(null);
         e.preventDefault();
       }
-      if (e.code === 'KeyF' && !e.repeat) {
+      if (DEV && e.code === 'KeyF' && !e.repeat) {
         this.frozen = !this.frozen;
         this.stepTicks = 0;
         if (!this.frozen && !this.debug) this.hud.setDebug(null);
       }
-      if (e.code === 'Period' && this.frozen) this.stepTicks++;
+      if (DEV && e.code === 'Period' && this.frozen) this.stepTicks++;
       if (this.fsm.state === GameStateId.MAIN_MENU) {
+        // A focused control handles its own keys (Space/Enter click a button, arrows move a slider).
+        const t = e.target as HTMLElement;
+        if (this.menuModal || t.closest?.('button, input')) return;
         if (e.code === 'Space' || e.code === 'Enter') this.startPlaying();
         const idx = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
-        if (idx >= 0) this.setTarget(MATCH_TARGETS[idx]);
+        if (idx >= 0) this.menuPick(() => this.setTarget(MATCH_TARGETS[idx]));
+        const step = e.code === 'ArrowLeft' ? -1 : e.code === 'ArrowRight' ? 1 : 0;
+        const d = DIFFICULTIES[DIFFICULTIES.indexOf(this.difficulty) + step];
+        if (step && d) this.menuPick(() => this.setDifficulty(d));
       } else if (this.fsm.state === GameStateId.MATCH_OVER && (e.code === 'Space' || e.code === 'Enter')) {
         this.newMatch();
       }
@@ -622,6 +721,9 @@ export class GameManager {
         this.goToMenu();
       } else if (this.fsm.state === GameStateId.MATCH_OVER) {
         this.goToMenu();
+      } else if (this.fsm.state === GameStateId.MAIN_MENU) {
+        if (this.menuModal) this.closeMenuModal();
+        else platform.exitApp?.();
       }
     });
     platform.onAdStateChange?.((active) => {
@@ -631,11 +733,14 @@ export class GameManager {
       } else {
         this.audio.setMuted(false);
       }
-      this.updatePauseMuteBtn();
+      this.updateMuteBtns();
     });
   }
 
   private togglePause(): void {
+    const st = this.fsm.state;
+    const inPlay = st === GameStateId.SERVING || st === GameStateId.RALLY || st === GameStateId.POINT_END;
+    if (!inPlay && !this.fsm.isPaused) return; // nothing to pause on the menus
     if (this.fsm.isPaused) {
       this.fsm.resume();
       this.lastFrame = performance.now();
@@ -647,60 +752,191 @@ export class GameManager {
     this.audio.play('click');
   }
 
-  private updatePauseMuteBtn(): void {
-    const btn = this.overlays?.pause?.querySelector<HTMLElement>('[data-a="mute"]');
-    if (btn) btn.textContent = this.audio.muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
+  /** Mute and effects toggles live in both the pause menu and the title-screen settings. */
+  private updateMuteBtns(): void {
+    for (const btn of this.uiRoot.querySelectorAll<HTMLElement>('[data-a="mute"]')) {
+      btn.textContent = this.audio.muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
+      btn.classList.toggle('is-off', this.audio.muted);
+    }
   }
 
-  private updatePauseFxBtn(): void {
-    const btn = this.overlays?.pause?.querySelector<HTMLElement>('[data-a="fx"]');
-    if (btn) btn.textContent = this.reducedFx ? 'EFFECTS: REDUCED' : 'EFFECTS: FULL';
+  private updateFxBtns(): void {
+    for (const btn of this.uiRoot.querySelectorAll<HTMLElement>('[data-a="fx"]')) {
+      btn.textContent = this.reducedFx ? 'EFFECTS: REDUCED' : 'EFFECTS: FULL';
+      btn.classList.toggle('is-off', this.reducedFx);
+    }
+  }
+
+  private syncVolumeSliders(): void {
+    const set = (name: string, v: number) => {
+      const input = this.overlays.title.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+      if (input) {
+        input.value = String(Math.round(v * 100));
+        input.style.setProperty('--fill', `${input.value}%`);
+      }
+    };
+    set('music', this.audio.bgmVolume);
+    set('sfx', this.audio.sfxVolume);
+  }
+
+  /** A title-screen pick: unlock audio (first gesture), apply, click. */
+  private menuPick(apply: () => void): void {
+    this.audio.unlock();
+    apply();
+    this.audio.play('click');
+  }
+
+  private openMenuModal(name: string): void {
+    this.closeMenuModal();
+    const modal = this.overlays.title.querySelector<HTMLElement>(`[data-modal="${name}"]`);
+    if (!modal) return;
+    if (name === 'howto') {
+      modal.querySelector<HTMLImageElement>('.howto-art')!.src = `${UI_ART}howto-${this.touch.active ? 'touch' : 'keyboard'}.jpg`;
+      this.renderHowTo(modal.querySelector('.howto-body')!);
+    }
+    modal.classList.remove('hidden');
+    this.menuModal = modal;
+    modal.querySelector<HTMLElement>('[data-a="close"]')?.focus({ preventScroll: true });
+  }
+
+  private closeMenuModal(): void {
+    this.menuModal?.classList.add('hidden');
+    this.menuModal = null;
+  }
+
+  /** Controls for the device in use (touch or keyboard + mouse), then the basic rules. */
+  private renderHowTo(el: HTMLElement): void {
+    const row = (keys: string, what: string) => `<div class="howto-row"><div class="howto-keys">${keys}</div><div>${what}</div></div>`;
+    const kbd = (k: string) => `<span class="kbd">${k}</span>`;
+    const controls = this.touch.active
+      ? [
+          row('Left thumb', 'Drag anywhere on the left half to move'),
+          row('Right side', 'Tap to hit, or swipe to aim: sideways for across the court, up for deeper'),
+          row('II', 'Pause (top right)'),
+        ]
+      : [
+          row(`${kbd('W A S D')} ${kbd('↑ ← ↓ →')}`, 'Move'),
+          row(kbd('SHIFT'), 'Sprint'),
+          row(`${kbd('SPACE')} ${kbd('CLICK')}`, 'Swing'),
+          row('Mouse', 'Point at the far court to aim your shot'),
+          row(`${kbd('ESC')} ${kbd('P')}`, 'Pause'),
+          row(kbd('M'), 'Mute'),
+        ];
+    el.innerHTML = `
+      <div class="howto-head">CONTROLS</div>${controls.join('')}
+      <div class="howto-head">RULES</div>
+      <ul class="howto-rules">
+        <li>Serve diagonally into the opposite court.</li>
+        <li>Let the serve bounce before you return it.</li>
+        <li>You lose the point if your shot lands out, hits the net, or you let the ball bounce twice.</li>
+        <li>Every rally scores. The winner of a rally serves next.</li>
+        <li>First to the target score wins, but you must win by 2.</li>
+      </ul>`;
   }
 
   private startPlaying(): void {
     if (this.fsm.state !== GameStateId.MAIN_MENU) return;
     this.audio.unlock();
     this.audio.play('click');
+    this.setDemoInputs(false);
     this.newMatch();
   }
 
   private buildOverlays() {
     const title = document.createElement('div');
     title.className = 'overlay title';
+    // Top: logo and career stats. The court between stays clear for the demo rally. Bottom: match
+    // setup, PLAY and the secondary buttons.
     title.innerHTML = `
-      <div class="logo">PICKLE<span>SMASH</span></div>
-      <div class="match-len">
-        <div class="match-len-label">GAME LENGTH <small>(win by 2)</small></div>
-        <div class="match-len-opts">
-          ${MATCH_TARGETS.map((t) => `<button class="opt" data-target="${t}">${t}<small>POINTS</small></button>`).join('')}
+      <div class="menu-top">
+        <img class="logo-img" src="${UI_ART}logo.png" alt="Pickle Smash" />
+        <div class="menu-stats hidden"></div>
+      </div>
+      <div class="menu-bottom">
+        <div class="menu-card">
+          <div class="pick">
+            <div class="pick-label">OPPONENT</div>
+            <div class="seg">
+              ${DIFFICULTIES.map((d) => `<button class="seg-opt" data-difficulty="${d}">${d.toUpperCase()}</button>`).join('')}
+            </div>
+          </div>
+          <div class="pick">
+            <div class="pick-label">GAME TO <small>(win by 2)</small></div>
+            <div class="seg">
+              ${MATCH_TARGETS.map((t) => `<button class="seg-opt" data-target="${t}">${t}</button>`).join('')}
+            </div>
+          </div>
+        </div>
+        <button class="tap art-btn" data-a="play">PLAY</button>
+        <div class="menu-links">
+          <button class="art-btn btn-howto" data-a="howto">HOW TO PLAY</button>
+          <button class="art-btn btn-settings" data-a="settings">SETTINGS</button>
+        </div>
+        <div class="kbd-hint">
+          <span class="kbd">ENTER</span> play &nbsp;·&nbsp; <span class="kbd">← →</span> opponent &nbsp;·&nbsp;
+          <span class="kbd">1</span><span class="kbd">2</span><span class="kbd">3</span> game length
         </div>
       </div>
-      <button class="tap" data-a="play">PLAY</button>
-      <div class="controls-help">
-        <span class="kbd">W A S D</span> move &nbsp; <span class="kbd">SHIFT</span> sprint &nbsp;
-        <span class="kbd">SPACE</span> / <span class="kbd">CLICK</span> swing<br/>
-        Point the mouse at the far court to aim &nbsp;·&nbsp; <span class="kbd">ESC</span> pause &nbsp;·&nbsp; <span class="kbd">M</span> mute &nbsp;·&nbsp; <span class="kbd">\`</span> debug &nbsp;·&nbsp; <span class="kbd">F</span> freeze<br/>
-        Mobile: left thumb moves, tap or swipe on the right to hit
+      <div class="menu-modal dim hidden" data-modal="howto">
+        <div class="panel howto">
+          <div class="logo panel-title">HOW TO PLAY</div>
+          <img class="howto-art" alt="" />
+          <div class="howto-body"></div>
+          <button class="art-btn btn-got-it" data-a="close">GOT IT</button>
+        </div>
+      </div>
+      <div class="menu-modal dim hidden" data-modal="settings">
+        <div class="panel">
+          <div class="logo panel-title">SETTINGS</div>
+          <label class="slider">MUSIC <input type="range" name="music" min="0" max="100" step="5" /></label>
+          <label class="slider">SOUND FX <input type="range" name="sfx" min="0" max="100" step="5" /></label>
+          <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
+          <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
+          <button class="art-btn btn-done" data-a="close">DONE</button>
+        </div>
       </div>`;
     title.addEventListener('click', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-target],[data-a]');
-      if (btn?.dataset.target) {
-        this.audio.unlock();
-        this.setTarget(Number(btn.dataset.target) as MatchTarget);
-        this.audio.play('click');
-      } else if (btn?.dataset.a === 'play') {
-        this.startPlaying();
+      const el = e.target as HTMLElement;
+      // A click on a dialog's dimmed backdrop closes it.
+      if (el.classList.contains('menu-modal')) {
+        this.closeMenuModal();
+        return;
       }
+      const btn = el.closest<HTMLElement>('[data-target],[data-difficulty],[data-a]');
+      if (!btn) return;
+      const { target, difficulty, a } = btn.dataset;
+      if (target) this.menuPick(() => this.setTarget(Number(target) as MatchTarget));
+      else if (difficulty) this.menuPick(() => this.setDifficulty(difficulty as Difficulty));
+      else if (a === 'play') this.startPlaying();
+      else if (a === 'howto' || a === 'settings') this.menuPick(() => this.openMenuModal(a));
+      else if (a === 'close') this.menuPick(() => this.closeMenuModal());
+      else if (a === 'mute') {
+        this.menuPick(() => this.audio.setMuted(!this.audio.muted));
+        this.updateMuteBtns();
+      } else if (a === 'fx') this.menuPick(() => this.setReducedEffects(!this.reducedFx));
+    });
+    title.addEventListener('input', (e) => {
+      const input = e.target as HTMLInputElement;
+      const v = Number(input.value) / 100;
+      input.style.setProperty('--fill', `${input.value}%`);
+      if (input.name === 'music') this.audio.setBgmVolume(v);
+      if (input.name === 'sfx') this.audio.setSfxVolume(v);
+    });
+    title.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      if (input.name !== 'music' && input.name !== 'sfx') return;
+      this.saveCustom(input.name === 'music' ? { musicVolume: this.audio.bgmVolume } : { sfxVolume: this.audio.sfxVolume });
+      if (input.name === 'sfx') this.audio.play('hit'); // preview the new level
     });
 
     const pause = document.createElement('div');
     pause.className = 'overlay dim hidden';
     pause.innerHTML = `<div class="panel"><div class="logo" style="font-size:40px">PAUSED</div>
-      <button class="btn" data-a="resume">RESUME</button>
-      <button class="btn secondary" data-a="restart">RESTART</button>
+      <button class="art-btn btn-resume" data-a="resume">RESUME</button>
+      <button class="art-btn btn-restart" data-a="restart">RESTART</button>
       <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
       <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
-      <button class="btn secondary" data-a="menu">MAIN MENU</button></div>`;
+      <button class="art-btn btn-main-menu" data-a="menu">MAIN MENU</button></div>`;
     pause.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).dataset.a;
       if (a === 'resume') this.togglePause();
@@ -710,7 +946,7 @@ export class GameManager {
       }
       if (a === 'mute') {
         this.audio.setMuted(!this.audio.muted);
-        this.updatePauseMuteBtn();
+        this.updateMuteBtns();
       }
       if (a === 'fx') {
         this.setReducedEffects(!this.reducedFx);
@@ -726,8 +962,8 @@ export class GameManager {
       <div class="best-rally hidden"></div>
       <div class="final"></div>
       <div class="sub"></div>
-      <button class="btn" data-a="again">PLAY AGAIN</button>
-      <button class="btn secondary" data-a="menu">MAIN MENU</button></div>`;
+      <button class="art-btn btn-play-again" data-a="again">PLAY AGAIN</button>
+      <button class="art-btn btn-main-menu" data-a="menu">MAIN MENU</button></div>`;
     matchOver.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).dataset.a;
       if (a) this.audio.play('click');

@@ -3,6 +3,11 @@ export interface SaveData {
   matchesPlayed?: number;
   matchesWon?: number;
   bestRally?: number;
+  /** Consecutive matches won (current run) and the longest run so far. */
+  winStreak?: number;
+  bestStreak?: number;
+  /** AI difficulty last picked on the title screen. */
+  difficulty?: string;
   highScore?: number;
   customData?: Record<string, unknown>;
 }
@@ -73,6 +78,9 @@ export interface PlatformAdapter {
 
   /** Hardware back button listener (Android) */
   onBackButton?(cb: () => void): void;
+
+  /** Close the app (Android back on the title screen); absent where a page can't close itself. */
+  exitApp?(): void;
 
   /** Haptic feedback / vibration (pattern in ms) */
   vibrate?(pattern?: number | number[]): void;

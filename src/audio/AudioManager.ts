@@ -87,6 +87,11 @@ export class AudioManager {
     this.applyBgmVolume();
   }
 
+  setSfxVolume(v: number): void {
+    this.sfxVolume = Math.max(0, Math.min(1, v));
+    this.applyVolume();
+  }
+
   setDucked(ducked: boolean): void {
     if (this.ducked === ducked) return;
     this.ducked = ducked;
@@ -225,14 +230,20 @@ export class AudioManager {
     if (this.sfx) this.sfx.gain.value = this.muted ? 0 : this.sfxVolume;
   }
 
-  /** `intensity` 0..1 scales loudness/brightness (e.g. shot speed). `pan` -1..1. */
-  play(id: SoundId, intensity = 0.6, pan = 0): void {
+  /** `intensity` 0..1 scales loudness/brightness (e.g. shot speed). `pan` -1..1. `gain` scales loudness only. */
+  play(id: SoundId, intensity = 0.6, pan = 0, gain = 1): void {
     const ctx = this.ctx;
     if (!ctx || !this.sfx || this.muted) return;
     const t = ctx.currentTime;
     const out = ctx.createStereoPanner();
     out.pan.value = Math.max(-1, Math.min(1, pan));
-    out.connect(this.sfx);
+    if (gain === 1) {
+      out.connect(this.sfx);
+    } else {
+      const g = ctx.createGain();
+      g.gain.value = gain;
+      out.connect(g).connect(this.sfx);
+    }
     switch (id) {
       case 'hit':
       case 'softHit':

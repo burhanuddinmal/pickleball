@@ -110,27 +110,34 @@ body {
 }
 
 .title {
-  background: linear-gradient(180deg, rgba(15, 27, 45, 0.25), rgba(15, 27, 45, 0.85));
-  cursor: pointer;
+  /* Clear in the middle so the demo rally shows; darker top and bottom behind the text. */
+  background: linear-gradient(180deg, rgba(15, 27, 45, 0.7) 0%, rgba(15, 27, 45, 0.1) 32%, rgba(15, 27, 45, 0.1) 52%, rgba(15, 27, 45, 0.88) 100%);
+  justify-content: space-between;
+  padding: calc(20px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.menu-top,
+.menu-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
 }
 
 .title .tap {
-  font-size: 20px;
-  font-weight: 700;
-  padding: 14px 28px;
+  font-size: 28px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  padding: 16px 0;
+  width: min(300px, 80vw);
   border-radius: 999px;
   background: var(--accent);
   color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   animation: pulse 1.4s ease-in-out infinite;
-}
-
-.title .controls-help {
-  max-width: 520px;
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.6;
-  opacity: 0.85;
-  padding: 0 16px;
 }
 
 .kbd {
@@ -564,63 +571,295 @@ body {
   pointer-events: none;
 }
 
-/* ---------- Game length picker / match over ---------- */
+/* ---------- Title menu: stats, pickers, dialogs ---------- */
 .title .tap {
   border: none;
   font-family: var(--font);
   cursor: pointer;
 }
 
-.match-len {
+.menu-stats {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+}
+
+.stat {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  min-width: 72px;
+  padding: 2px 8px;
 }
 
-.match-len-label {
-  font-size: 13px;
+.stat-value {
+  font-size: 22px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.stat-label small {
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.menu-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 24px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  max-width: 100%;
+}
+
+.pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pick-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
   opacity: 0.9;
 }
 
-.match-len-label small {
+.pick-label small {
   font-weight: 600;
   opacity: 0.75;
   letter-spacing: 0;
 }
 
-.match-len-opts {
+.seg {
+  display: flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.seg-opt {
+  min-width: 48px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--white);
+  font: 800 13px var(--font);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.seg-opt.selected {
+  background: var(--accent);
+  color: var(--ink);
+}
+
+.menu-links {
   display: flex;
   gap: 10px;
 }
 
-.match-len .opt {
+.btn.small {
+  min-width: 0;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.kbd-hint {
+  font-size: 12px;
+  opacity: 0.7;
+  text-align: center;
+}
+
+.kbd + .kbd {
+  margin-left: 3px;
+}
+
+/* No keyboard hints on touch-first devices. */
+@media (pointer: coarse) {
+  .kbd-hint {
+    display: none;
+  }
+}
+
+.menu-modal {
+  position: fixed;
+  inset: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  width: 84px;
-  padding: 10px 0 8px;
-  border-radius: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  background: rgba(12, 22, 38, 0.6);
-  color: var(--white);
-  font: 900 28px var(--font);
+  justify-content: center;
+  padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  overflow-y: auto;
+  touch-action: pan-y;
+  z-index: 1;
+}
+
+.menu-modal .panel {
+  max-width: 460px;
+  margin: auto;
+}
+
+.panel-title {
+  font-size: 32px;
+  margin-bottom: 4px;
+}
+
+.howto-body {
+  width: 100%;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.howto-head {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.howto-row {
+  display: grid;
+  grid-template-columns: 9.5em 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.howto-keys {
+  font-weight: 700;
+}
+
+.howto-rules {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.howto-rules li + li {
+  margin-top: 4px;
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: 6.5em 1fr;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.slider input {
+  width: 100%;
+  accent-color: var(--accent);
+  touch-action: pan-x;
   cursor: pointer;
 }
 
-.match-len .opt small {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  opacity: 0.8;
+/* Keyboard focus. */
+.title button:focus-visible,
+.overlay .btn:focus-visible,
+.slider input:focus-visible {
+  outline: 3px solid var(--white);
+  outline-offset: 3px;
 }
 
-.match-len .opt.selected {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--ink);
+/* Short screens (phones in landscape): shrink the logo and spacing so everything fits. */
+@media (max-height: 520px) {
+  .title {
+    padding-top: calc(10px + var(--safe-top));
+    padding-bottom: calc(10px + var(--safe-bottom));
+  }
+
+  .menu-top .logo-img {
+    width: min(240px, 46vw);
+  }
+
+  .stat-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .seg-opt[data-difficulty]::before,
+  .howto-art {
+    display: none;
+  }
+
+  .menu-top,
+  .menu-bottom {
+    gap: 8px;
+  }
+
+  .stat-value {
+    font-size: 17px;
+  }
+
+  .menu-card {
+    padding: 8px 12px;
+  }
+
+  .title .tap {
+    font-size: 22px;
+    padding: 10px 0;
+  }
+
+  .kbd-hint {
+    display: none;
+  }
+
+  .menu-modal .panel {
+    padding: 16px 20px;
+    gap: 8px;
+  }
+
+  .panel-title {
+    font-size: 24px;
+  }
+
+  .howto-body {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .howto-head {
+    margin: 4px 0 2px;
+  }
+}
+
+/* Narrow phones: a smaller stats strip. */
+@media (max-width: 420px) {
+  .stat {
+    min-width: 0;
+    padding: 2px 5px;
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+  }
 }
 
 .hud-mid .target {
@@ -762,14 +1001,13 @@ body {
 
 /* ---------- Menu feel ---------- */
 .btn,
-.match-len .opt,
+.seg-opt,
 .title .tap {
   transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 
 @media (hover: hover) {
-  .btn:hover,
-  .match-len .opt:hover {
+  .btn:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
   }
@@ -777,10 +1015,14 @@ body {
   .title .tap:hover {
     filter: brightness(1.08);
   }
+
+  .seg-opt:not(.selected):hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
 }
 
 .btn:active,
-.match-len .opt:active {
+.seg-opt:active {
   transform: translateY(1px) scale(0.96);
   box-shadow: none;
   transition-duration: 0.05s;
@@ -791,7 +1033,7 @@ body {
   transform: scale(0.93);
 }
 
-.title .logo {
+.menu-top .logo-img {
   animation: logo-bob 3.2s ease-in-out infinite;
 }
 
@@ -806,7 +1048,8 @@ body {
 }
 
 /* Tier 3 motion under "reduce effects" and the OS reduced-motion setting. */
-.reduce-fx .title .logo,
+.reduce-fx .menu-top .logo-img,
+.reduce-fx .title .tap,
 .reduce-fx .best-rally {
   animation: none;
 }
@@ -816,7 +1059,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .title .logo,
+  .menu-top .logo-img,
   .title .tap,
   .best-rally {
     animation: none;
@@ -824,5 +1067,373 @@ body {
 
   .callout.show {
     animation: callout-fade 1.4s linear both;
+  }
+}
+
+/* ---------- Menu art ----------
+   Pieces cut from public/assets/images by scripts/extract-menu-assets.py into public/assets/ui. */
+.logo-img {
+  display: block;
+  width: min(480px, 84vw);
+  height: auto;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.45));
+}
+
+.loading {
+  background:
+    linear-gradient(180deg, rgba(15, 27, 45, 0.45) 0%, rgba(15, 27, 45, 0.85) 100%),
+    url('/assets/ui/court-bg.jpg') center / cover,
+    var(--ink);
+}
+
+.progress {
+  height: 14px;
+  border: 2px solid #e4f53a;
+  background: rgba(15, 27, 45, 0.75);
+  box-shadow: 0 0 14px rgba(228, 245, 58, 0.45);
+}
+
+.progress .bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a8e82a, #e4f53a);
+  box-shadow: 0 0 10px #e4f53a;
+}
+
+/* Buttons whose label is baked into the art. The text stays in the DOM for screen readers. */
+.art-btn {
+  border: none;
+  padding: 0;
+  font-size: 0;
+  color: transparent;
+  background: transparent center / contain no-repeat;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .art-btn:hover {
+    filter: brightness(1.12);
+  }
+}
+
+.art-btn:active {
+  transform: scale(0.95);
+}
+
+.title .tap.art-btn {
+  width: min(300px, 80vw);
+  aspect-ratio: 465 / 205;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 0;
+  /* Second layer preloads the pressed state. */
+  background-color: transparent;
+  background-image: url('/assets/ui/btn-play.png'), url('/assets/ui/btn-play-pressed.png');
+  background-size: contain, 0 0;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.4));
+}
+
+.title .tap.art-btn:active {
+  background-image: url('/assets/ui/btn-play-pressed.png');
+  background-size: contain;
+}
+
+.btn-howto,
+.btn-settings {
+  width: min(180px, 42vw);
+  aspect-ratio: 465 / 140;
+}
+
+.btn-howto {
+  background-image: url('/assets/ui/btn-howto.png');
+}
+
+.btn-settings {
+  background-image: url('/assets/ui/btn-settings.png');
+}
+
+.btn-got-it,
+.btn-done {
+  width: min(220px, 60vw);
+  aspect-ratio: 465 / 135;
+  margin-top: 4px;
+}
+
+.btn-got-it {
+  background-image: url('/assets/ui/btn-got-it.png');
+}
+
+.btn-done {
+  background-image: url('/assets/ui/btn-done.png');
+}
+
+/* Match setup card: carbon glass with a cyan rim; picks glow gold when selected. */
+.menu-card {
+  background:
+    linear-gradient(rgba(10, 20, 34, 0.55), rgba(10, 20, 34, 0.55)),
+    url('/assets/ui/card-texture.jpg') center / cover;
+  border: 1px solid rgba(90, 220, 255, 0.45);
+  box-shadow: 0 0 18px rgba(64, 200, 255, 0.22), inset 0 0 14px rgba(64, 200, 255, 0.1);
+}
+
+.seg {
+  background: rgba(5, 12, 22, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(120, 200, 230, 0.3);
+}
+
+.seg-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.seg-opt.selected {
+  background: linear-gradient(180deg, #ffe680 0%, #f7bd12 100%);
+  color: var(--ink);
+  box-shadow: 0 0 12px rgba(255, 210, 63, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.seg-opt[data-difficulty]::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  background: center / contain no-repeat;
+}
+
+.seg-opt[data-difficulty='easy']::before {
+  background-image: url('/assets/ui/icon-easy.png');
+}
+
+.seg-opt[data-difficulty='medium']::before {
+  background-image: url('/assets/ui/icon-medium.png');
+}
+
+.seg-opt[data-difficulty='hard']::before {
+  background-image: url('/assets/ui/icon-hard.png');
+}
+
+/* The art has three faces; the flame stands in for expert. */
+.seg-opt[data-difficulty='expert']::before {
+  background-image: url('/assets/ui/icon-streak.png');
+}
+
+.stat-icon {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  margin-bottom: 2px;
+}
+
+/* Sound and effects toggles (title settings and pause menu) show their current state. */
+.btn[data-a='mute'],
+.btn[data-a='fx'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.btn[data-a='mute']::before,
+.btn[data-a='fx']::before {
+  content: '';
+  width: 24px;
+  height: 24px;
+  flex: none;
+  background: center / contain no-repeat;
+}
+
+.btn[data-a='mute']::before {
+  background-image: url('/assets/ui/icon-sound-on.png');
+}
+
+.btn[data-a='mute'].is-off::before {
+  background-image: url('/assets/ui/icon-sound-off.png');
+}
+
+.btn[data-a='fx']::before {
+  background-image: url('/assets/ui/icon-fx-on.png');
+}
+
+.btn[data-a='fx'].is-off::before {
+  background-image: url('/assets/ui/icon-fx-off.png');
+}
+
+/* Dialogs: glass panel with a cyan rim, like the settings art. */
+.menu-modal .panel {
+  background: linear-gradient(180deg, rgba(16, 34, 54, 0.95), rgba(10, 22, 38, 0.95));
+  border: 1.5px solid rgba(90, 220, 255, 0.6);
+  box-shadow: 0 0 26px rgba(64, 200, 255, 0.3), inset 0 0 18px rgba(64, 200, 255, 0.08);
+}
+
+.howto-art {
+  display: block;
+  max-width: 100%;
+  max-height: min(36vh, 300px);
+  border-radius: 12px;
+}
+
+/* Volume sliders: glowing fill (--fill is set from script) and the brushed-metal knob. */
+.slider input {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 30px;
+  background: transparent;
+}
+
+.slider input[name='music'] {
+  --c: #3ee0ff;
+}
+
+.slider input[name='sfx'] {
+  --c: #d8f53a;
+}
+
+.slider input::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--c) var(--fill, 50%), rgba(5, 12, 22, 0.85) var(--fill, 50%));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 8px color-mix(in srgb, var(--c) 40%, transparent);
+}
+
+.slider input::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(5, 12, 22, 0.85);
+}
+
+.slider input::-moz-range-progress {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--c);
+}
+
+.slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 30px;
+  height: 30px;
+  margin-top: -10px;
+  border: none;
+  border-radius: 50%;
+  background: url('/assets/ui/slider-knob.png') center / contain;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.slider input::-moz-range-thumb {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: url('/assets/ui/slider-knob.png') center / contain;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* Keyboard hints styled like the arcade keycaps. */
+.kbd {
+  background: #1a2b45;
+  border: 1px solid rgba(150, 220, 255, 0.55);
+  box-shadow: 0 2px 0 #0a1424, 0 0 6px rgba(120, 210, 255, 0.3);
+}
+
+/* ---------- HUD art ----------
+   Pieces cut from hud_gameplay_buttons.jpg by scripts/extract-menu-assets.py. */
+.pause-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 0;
+  font-size: 0;
+  color: transparent;
+  background: url('/assets/ui/hud-pause.png') center / contain no-repeat;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.4));
+}
+
+.pause-btn:active,
+.pause-btn:focus-visible {
+  background-image: url('/assets/ui/hud-pause-pressed.png');
+}
+
+@media (hover: hover) {
+  .pause-btn:hover {
+    background-image: url('/assets/ui/hud-pause-pressed.png');
+  }
+}
+
+/* Scoreboard: dark glass bar with a gold rim, like the HUD art; team colours stay on the scores. */
+.hud-top {
+  background: linear-gradient(180deg, rgba(30, 48, 70, 0.88), rgba(12, 22, 38, 0.88));
+  border: 1px solid rgba(230, 190, 90, 0.55);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.hud-mid {
+  gap: 1px;
+}
+
+.vs-badge {
+  width: 26px;
+  height: 26px;
+  margin-bottom: 1px;
+}
+
+/* GAME POINT: the medallion in front of the holder-coloured pill. */
+.gp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 4px;
+}
+
+.gp-badge::before {
+  content: '';
+  width: 30px;
+  height: 28px;
+  margin: -6px 0 -6px -10px;
+  background: url('/assets/ui/hud-game-point.png') center / contain no-repeat;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
+
+/* Pause and match-over overlay buttons (labels baked into the art). */
+.btn-resume,
+.btn-play-again {
+  width: min(260px, 72vw);
+  aspect-ratio: 397 / 110;
+}
+
+.btn-resume {
+  background-image: url('/assets/ui/btn-resume.png');
+}
+
+.btn-play-again {
+  background-image: url('/assets/ui/btn-play-again.png');
+}
+
+.btn-restart,
+.btn-main-menu {
+  width: min(220px, 62vw);
+  aspect-ratio: 263 / 90;
+}
+
+.btn-restart {
+  background-image: url('/assets/ui/btn-restart.png');
+}
+
+.btn-main-menu {
+  background-image: url('/assets/ui/btn-main-menu.png');
+}
+
+.overlay .art-btn {
+  pointer-events: auto;
+}
+
+/* Short screens: keep the scoreboard compact. */
+@media (max-height: 520px) {
+  .vs-badge {
+    display: none;
+  }
+
+  .pause-btn {
+    width: 44px;
+    height: 44px;
   }
 }

@@ -28,7 +28,7 @@ export class HUD {
       <div class="hud-corner">
         <div class="hud-top">
           <div class="hud-score hero"><span class="label"></span><span class="value">0</span><span class="serve-dot">● SERVING</span></div>
-          <div class="hud-mid"><span class="target"></span><span>RALLY</span><span class="rally">0</span></div>
+          <div class="hud-mid"><img class="vs-badge" src="${import.meta.env.BASE_URL}assets/ui/hud-vs.png" alt="vs" /><span class="target"></span><span>RALLY</span><span class="rally">0</span></div>
           <div class="hud-score rival"><span class="label"></span><span class="value">0</span><span class="serve-dot">● SERVING</span></div>
         </div>
         <div class="gp-badge hidden"></div>
