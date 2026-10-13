@@ -66,8 +66,20 @@ export const SIM = {
 export const PLAYER = {
   RUN_SPEED: 4.7,
   SPRINT_SPEED: 6.3,
-  ACCEL: 34,
-  DECEL: 42,
+  /** Ramp toward the stick direction (m/s²): ~0.06 s to full run speed. */
+  ACCEL: 80,
+  /** Braking with no input: ~0.085 s / ~0.2 m skid from a run. */
+  DECEL: 55,
+  /** Braking when the input opposes the current velocity, so reversals feel instant. */
+  TURN_ACCEL: 140,
+  /** Body turn rate toward the ball (exponential smoothing, 1/s). */
+  TURN_RATE: 22,
+  /** Move-speed multiplier while the paddle is in its contact window (not the whole swing). */
+  SWING_SPEED_MUL: 0.8,
+  /** Swing assist: when a swing starts with the ball this far beyond REACH, step toward it. */
+  AUTO_STEP: 0.4,
+  /** Time (s) over which the auto-step is applied. */
+  AUTO_STEP_TIME: 0.1,
   /** Horizontal reach from body center to where the paddle can meet the ball. */
   REACH: 1.1,
   REACH_MIN_H: 0.06,
@@ -91,6 +103,48 @@ export const PLAYER = {
   BACK_ROOM: 3.6,
   SIDE_ROOM: 2.6,
   NET_GAP: 0.28,
+  /** Distance from body center to the edge of the feet, for kitchen and foot-fault judging. */
+  FOOT_RADIUS: 0.1,
+} as const;
+
+export const RULES = {
+  /** After a volley, stepping into the kitchen within this time is a momentum fault (s). */
+  MOMENTUM_WINDOW: 0.5,
+} as const;
+
+/** Hold-to-charge power shots. */
+export const POWER = {
+  /** Hold time (s) for a full charge. */
+  CHARGE_TIME: 0.6,
+  /** Presses shorter than this are plain taps (normal shot). */
+  TAP_TIME: 0.12,
+  /** Charge at or above which a shot counts as a power shot. */
+  MIN: 0.3,
+  /** Contact height (m) above which a charged shot becomes an overhead smash. */
+  SMASH_HEIGHT: 1.5,
+  /** Recovery (swing cooldown, s) after a power swing; a normal contact recovers in 0.02 s. */
+  RECOVERY: 0.28,
+} as const;
+
+/** Shot targeting: 3×3 target zones and error scaling. */
+export const AIM = {
+  /** Aim assist: zone targets sit this far (m) inside the sidelines / baseline. */
+  INSET: 0.5,
+  /** Short targets land this far (m) past the kitchen line. */
+  SHORT_PAST_KITCHEN: 0.6,
+  /** Stick / key deflection needed to pick a side column or short/deep row. */
+  DEAD_ZONE: 0.3,
+  /** With no direction held, aim this far (normalized) away from the opponent. */
+  DEFAULT_AWAY: 0.3,
+  /** Multiplier on the base aim error for a perfect and for a worst-quality contact. */
+  ERROR_BEST: 0.4,
+  ERROR_WORST: 2.0,
+  /** Base aim error before scaling: lateral, depth. */
+  BASE_ERR_X: 0.05,
+  BASE_ERR_DEPTH: 0.04,
+  /** Swing time (s) range inside CONTACT_WINDOW that counts as perfectly timed. */
+  SWEET_START: 0.04,
+  SWEET_END: 0.15,
 } as const;
 
 /** +1 = near side (z > 0), -1 = far side (z < 0). */

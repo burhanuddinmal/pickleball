@@ -38,7 +38,7 @@ export interface AthleteRig {
   /** Point-end body language; null returns to normal play. */
   react(kind: Reaction): void;
   /** Paddle contact this swing; power contacts hold the follow-through. */
-  onHit(intensity: number): void;
+  onHit(intensity: number, power?: boolean): void;
 }
 
 /** Share of the swing spent on the extra wind-up (pull back and dip) before the stroke. */
@@ -80,8 +80,8 @@ export class SwingPose {
     if (kind) this.shown = kind;
   }
 
-  onHit(intensity: number): void {
-    this.power = intensity > 0.75;
+  onHit(intensity: number, power = intensity > 0.75): void {
+    this.power = power;
   }
 
   update(a: Athlete, dt: number, shoulderY: number, reach: number): void {
@@ -375,7 +375,7 @@ export class PrimitiveAthleteView implements AthleteRig {
     this.pose.react(kind);
   }
 
-  onHit(intensity: number): void {
-    this.pose.onHit(intensity);
+  onHit(intensity: number, power?: boolean): void {
+    this.pose.onHit(intensity, power);
   }
 }

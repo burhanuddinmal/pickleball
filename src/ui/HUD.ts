@@ -14,6 +14,8 @@ export class HUD {
   private calloutEl: HTMLDivElement;
   private hint: HTMLDivElement;
   private debugEl: HTMLDivElement;
+  private chargeEl: HTMLDivElement;
+  private chargeFill: HTMLDivElement;
   readonly pauseButton: HTMLButtonElement;
 
   constructor(
@@ -36,6 +38,7 @@ export class HUD {
       </div>
       <div class="banner"><div class="big"></div><div class="small"></div></div>
       <div class="hint"></div>
+      <div class="charge-meter hidden"><div class="charge-fill"></div></div>
       <button class="pause-btn" aria-label="Pause">II</button>
       <div class="debug hidden"></div>`;
     parent.appendChild(this.root);
@@ -54,6 +57,8 @@ export class HUD {
     this.calloutEl = q('.callout');
     this.hint = q('.hint');
     this.debugEl = q('.debug');
+    this.chargeEl = q('.charge-meter');
+    this.chargeFill = q('.charge-fill');
     this.pauseButton = q('.pause-btn');
   }
 
@@ -164,6 +169,19 @@ export class HUD {
     if (holder === null) return;
     this.gamePointEl.textContent = `GAME POINT · ${(holder === 'hero' ? this.heroName : this.rivalName).toUpperCase()}`;
     this.gamePointEl.className = `gp-badge ${holder}`;
+  }
+
+  /**
+   * Power-shot charge meter at screen point (`x`, `y`) (above the player); null hides it.
+   * `ready` marks a charge high enough to count as a power shot.
+   */
+  setCharge(k: number | null, x = 0, y = 0, ready = false): void {
+    this.chargeEl.classList.toggle('hidden', k === null);
+    if (k === null) return;
+    this.chargeEl.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+    this.chargeFill.style.width = `${Math.round(k * 100)}%`;
+    this.chargeEl.classList.toggle('ready', ready);
+    this.chargeEl.classList.toggle('full', k >= 1);
   }
 
   setHint(text: string): void {

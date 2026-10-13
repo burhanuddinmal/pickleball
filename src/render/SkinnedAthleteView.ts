@@ -151,8 +151,8 @@ export class SkinnedAthleteView implements AthleteRig {
     this.pose.react(kind);
   }
 
-  onHit(intensity: number): void {
-    this.pose.onHit(intensity);
+  onHit(intensity: number, power?: boolean): void {
+    this.pose.onHit(intensity, power);
   }
 
   /** Applies a rotation expressed in the body's frame to a bone's current (animated) pose. */

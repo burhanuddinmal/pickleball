@@ -1,17 +1,16 @@
-import { clamp } from '../utils/MathUtils';
-
 const JOY_RADIUS = 55;
-const SWIPE_FIRE_PX = 42;
 
 /**
  * Mobile controls: a floating joystick on the left half of the screen, and a swing area on the
- * right half. Tap = swing at the default target; swipe = swing aimed in the swipe direction
- * (left/right = across the court, up = deeper).
+ * right half. Touch down starts charging, lifting the finger hits: a quick tap is a normal shot at
+ * the default target, holding charges a power shot, and the swipe direction picks the target zone
+ * (sideways = across the court, up = deep, down = short).
  */
 export class TouchControls {
   active = false;
   readonly joystick = { x: 0, y: 0 };
-  readonly aim = { x: 0, depth: 0.72 };
+  /** Live swipe vector (px) while the swing finger is down, else null. */
+  swipe: { dx: number; dy: number } | null = null;
   private layer: HTMLDivElement;
   private base: HTMLDivElement;
   private knob: HTMLDivElement;
@@ -19,8 +18,8 @@ export class TouchControls {
   private joyOrigin = { x: 0, y: 0 };
   private swipeId: number | null = null;
   private swipeStart = { x: 0, y: 0 };
-  private fired = false;
-  private swingCbs: (() => void)[] = [];
+  private pressCbs: (() => void)[] = [];
+  private releaseCbs: ((dx: number, dy: number) => void)[] = [];
 
   constructor(parent: HTMLElement) {
     this.layer = document.createElement('div');
@@ -37,7 +36,7 @@ export class TouchControls {
     this.base.appendChild(this.knob);
     const hint = document.createElement('div');
     hint.className = 'swipe-hint';
-    hint.textContent = 'TAP or SWIPE to hit';
+    hint.textContent = 'TAP to hit · HOLD for power · SWIPE to aim';
     this.layer.append(this.base, hint);
     parent.appendChild(this.layer);
 
@@ -61,8 +60,13 @@ export class TouchControls {
     this.layer.classList.toggle('hidden', !(v && this.active));
   }
 
-  onSwing(cb: () => void): void {
-    this.swingCbs.push(cb);
+  onPress(cb: () => void): void {
+    this.pressCbs.push(cb);
+  }
+
+  /** Called when the swing finger lifts, with the swipe vector (px, screen space). */
+  onRelease(cb: (dx: number, dy: number) => void): void {
+    this.releaseCbs.push(cb);
   }
 
   private joyDown = (e: PointerEvent): void => {
@@ -79,7 +83,8 @@ export class TouchControls {
     if (this.swipeId !== null) return;
     this.swipeId = e.pointerId;
     this.swipeStart = { x: e.clientX, y: e.clientY };
-    this.fired = false;
+    this.swipe = { dx: 0, dy: 0 };
+    for (const cb of this.pressCbs) cb();
   };
 
   private move = (e: PointerEvent): void => {
@@ -94,10 +99,9 @@ export class TouchControls {
       this.knob.style.transform = `translate(${dx}px, ${dy}px)`;
       this.joystick.x = dx / JOY_RADIUS;
       this.joystick.y = -dy / JOY_RADIUS;
-    } else if (e.pointerId === this.swipeId && !this.fired) {
-      const dx = e.clientX - this.swipeStart.x;
-      const dy = e.clientY - this.swipeStart.y;
-      if (Math.hypot(dx, dy) >= SWIPE_FIRE_PX) this.fire(dx, dy);
+    } else if (e.pointerId === this.swipeId && this.swipe) {
+      this.swipe.dx = e.clientX - this.swipeStart.x;
+      this.swipe.dy = e.clientY - this.swipeStart.y;
     }
   };
 
@@ -108,21 +112,11 @@ export class TouchControls {
       this.joystick.y = 0;
       this.base.classList.add('hidden');
     } else if (e.pointerId === this.swipeId) {
-      if (!this.fired) this.fire(0, 0);
+      const dx = e.clientX - this.swipeStart.x;
+      const dy = e.clientY - this.swipeStart.y;
       this.swipeId = null;
+      this.swipe = null;
+      for (const cb of this.releaseCbs) cb(dx, dy);
     }
   };
-
-  private fire(dx: number, dy: number): void {
-    this.fired = true;
-    const len = Math.hypot(dx, dy);
-    if (len < 10) {
-      this.aim.x = 0;
-      this.aim.depth = 0.72;
-    } else {
-      this.aim.x = clamp((dx / len) * 1.4, -1, 1);
-      this.aim.depth = clamp(0.5 + (-dy / len) * 0.42, 0.18, 0.95);
-    }
-    for (const cb of this.swingCbs) cb();
-  }
 }

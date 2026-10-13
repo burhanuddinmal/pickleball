@@ -1437,3 +1437,33 @@ body {
     height: 44px;
   }
 }
+
+/* Power-shot charge meter, positioned above the player by HUD.setCharge(). */
+.charge-meter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 64px;
+  height: 9px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(5, 12, 22, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+
+.charge-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.charge-meter.ready .charge-fill {
+  background: #ffb03a;
+}
+
+.charge-meter.full .charge-fill {
+  background: #ff6a3d;
+  box-shadow: 0 0 10px rgba(255, 90, 40, 0.9);
+}

@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import { PLAYER, type Side } from '../utils/Constants';
+import { PLAYER, POWER, type Side } from '../utils/Constants';
 
 export type StrokeHand = 'forehand' | 'backhand';
 export type SwingKind = 'serve' | 'stroke';
@@ -14,6 +14,8 @@ export interface SwingState {
   contact: boolean;
   /** Height of the ball at contact (drives the visual swing plane). */
   contactHeight: number;
+  /** Charge 0..1 this swing was released with (0 = normal shot). */
+  power: number;
 }
 
 /** Pure gameplay data for one player. Rendering reads this; it never writes it. */
@@ -29,6 +31,7 @@ export class Athlete {
     t: 0,
     contact: false,
     contactHeight: 1,
+    power: 0,
   };
   holdingBall = false;
   /** Time since the last swing ended, used for a short recovery cooldown. */
@@ -40,9 +43,9 @@ export class Athlete {
     readonly name: string,
   ) {}
 
-  startSwing(kind: SwingKind, hand: StrokeHand): boolean {
+  startSwing(kind: SwingKind, hand: StrokeHand, power = 0): boolean {
     if (this.swing.active || this.swingCooldown > 0) return false;
-    Object.assign(this.swing, { active: true, kind, hand, t: 0, contact: false });
+    Object.assign(this.swing, { active: true, kind, hand, t: 0, contact: false, power });
     return true;
   }
 
@@ -52,7 +55,9 @@ export class Athlete {
     this.swing.t += dt;
     if (this.swing.t >= PLAYER.SWING_DURATION) {
       this.swing.active = false;
-      this.swingCooldown = this.swing.contact ? 0.02 : 0.08;
+      // Power swings take longer to recover from.
+      const powered = this.swing.power >= POWER.MIN;
+      this.swingCooldown = this.swing.contact ? (powered ? POWER.RECOVERY : 0.02) : powered ? POWER.RECOVERY : 0.08;
     }
   }
 

@@ -1,7 +1,8 @@
 import { Vector3 } from 'three';
 import { createBallState } from '../physics/BallPhysics';
 import { samplePath, type PathSample } from '../physics/Trajectory';
-import { COURT, PLAYER } from '../utils/Constants';
+import { isInKitchen } from '../gameplay/RuleManager';
+import { COURT, PLAYER, POWER } from '../utils/Constants';
 import { clamp, Rng, sideToWorld } from '../utils/MathUtils';
 import { emptyIntent, type InputContext, type InputProvider, type PlayerIntent } from './InputProvider';
 
@@ -19,13 +20,15 @@ export interface AIProfile {
   /** Probability of a mistimed / mis-read ball on a difficult shot. */
   whiff: number;
   serveDelay: number;
+  /** Chance to load up a power shot / smash on a high, short ball. */
+  power: number;
 }
 
 export const AI_PROFILES: Record<Difficulty, AIProfile> = {
-  easy: { reaction: 0.34, speed: 0.72, aimError: 0.22, safety: 0.3, whiff: 0.12, serveDelay: 1.4 },
-  medium: { reaction: 0.24, speed: 0.86, aimError: 0.14, safety: 0.22, whiff: 0.06, serveDelay: 1.1 },
-  hard: { reaction: 0.16, speed: 0.97, aimError: 0.09, safety: 0.15, whiff: 0.03, serveDelay: 0.9 },
-  expert: { reaction: 0.1, speed: 1.05, aimError: 0.06, safety: 0.1, whiff: 0.012, serveDelay: 0.8 },
+  easy: { reaction: 0.34, speed: 0.72, aimError: 0.22, safety: 0.3, whiff: 0.12, serveDelay: 1.4, power: 0.3 },
+  medium: { reaction: 0.24, speed: 0.86, aimError: 0.14, safety: 0.22, whiff: 0.06, serveDelay: 1.1, power: 0.5 },
+  hard: { reaction: 0.16, speed: 0.97, aimError: 0.09, safety: 0.15, whiff: 0.03, serveDelay: 0.9, power: 0.7 },
+  expert: { reaction: 0.1, speed: 1.05, aimError: 0.06, safety: 0.1, whiff: 0.012, serveDelay: 0.8, power: 0.85 },
 };
 
 interface InterceptPlan {
@@ -34,11 +37,18 @@ interface InterceptPlan {
   /** Hit only after this many bounces since the opponent's contact. */
   bounces: number;
   feasible: boolean;
+  /** Planned as a put-away: hit it with a power shot / smash. */
+  power?: boolean;
 }
 
 const HIT_OFFSET = 0.55;
 const COMFORT_MIN = 0.35;
 const COMFORT_MAX = 1.5;
+/** A ball at least this high (m) and this close to the net (m) is a put-away chance. */
+const POWER_BALL_HEIGHT = 1.15;
+const POWER_BALL_DEPTH = COURT.HALF_LENGTH * 0.7;
+/** Stay this far (m) outside the kitchen when planning a volley, to avoid a momentum fault. */
+const KITCHEN_MARGIN = 0.25;
 
 /**
  * AI opponent. Observes only what a human could see (ball position/velocity, player positions)
@@ -55,6 +65,8 @@ export class AIController implements InputProvider {
   private wasServing = false;
   private shotId = 0;
   private willWhiff = false;
+  /** Rolled per incoming shot: look for a high, short ball to put away. */
+  private wantPower = false;
   private readonly predictState = createBallState();
   /** Exposed for the debug overlay. */
   readonly debugTarget = new Vector3();
@@ -70,6 +82,7 @@ export class AIController implements InputProvider {
     const i = this.intent;
     i.swing = false;
     i.sprint = false;
+    i.power = 0;
 
     if (ctx.isServing) {
       this.updateServe(ctx, dt);
@@ -98,6 +111,7 @@ export class AIController implements InputProvider {
       this.plan = null;
       this.replanTimer = 0;
       this.willWhiff = this.rng.chance(this.profile.whiff);
+      this.wantPower = this.rng.chance(this.profile.power);
     }
 
     if (this.reactTimer > 0) {
@@ -127,9 +141,16 @@ export class AIController implements InputProvider {
     const horiz = Math.hypot(b.x - ctx.selfPos.x, b.z - ctx.selfPos.z);
     const bouncesOk = ctx.bouncesSinceHit >= this.plan.bounces;
     const approaching = ctx.ballVel.z * ctx.side > 0 || ctx.bouncesSinceHit > 0;
-    if (onMySide && bouncesOk && approaching && horiz < PLAYER.REACH * 0.92 && b.y > PLAYER.REACH_MIN_H && b.y < PLAYER.REACH_MAX_H) {
+    // Same rules as the player: no volley before the two-bounce rule is met, none from the kitchen.
+    const volley = ctx.bouncesSinceHit === 0;
+    const legal = !volley || (!ctx.mustLetBounce && !isInKitchen(ctx.side, ctx.selfPos));
+    if (onMySide && bouncesOk && legal && approaching && horiz < PLAYER.REACH * 0.92 && b.y > PLAYER.REACH_MIN_H && b.y < PLAYER.REACH_MAX_H) {
       if (!this.willWhiff) {
         this.chooseAim(ctx);
+        // Put away high, short balls with a power shot (a smash when overhead).
+        if (this.plan.power && b.y > POWER_BALL_HEIGHT - 0.2 && b.z * ctx.side < POWER_BALL_DEPTH) {
+          i.power = this.rng.range(Math.max(POWER.MIN, 0.6), 1);
+        }
         i.swing = true;
       }
     }
@@ -171,6 +192,23 @@ export class AIController implements InputProvider {
     let best: InterceptPlan | null = null;
     let bestLateness = Infinity;
 
+    // Put-away pass: a reachable high, short ball is worth a power shot.
+    if (this.wantPower) {
+      for (const p of path) {
+        const totalBounces = p.bounces + ctx.bouncesSinceHit;
+        if (totalBounces > 1 || totalBounces < minBounces) continue;
+        const depth = p.pos.z * ctx.side;
+        if (depth < 0.2 || depth > POWER_BALL_DEPTH) continue;
+        if (p.pos.y < POWER_BALL_HEIGHT || p.pos.y > PLAYER.REACH_MAX_H - 0.1) continue;
+        const stand = this.standPoint(ctx, p.pos);
+        if (totalBounces === 0 && isInKitchen(ctx.side, stand, PLAYER.FOOT_RADIUS + KITCHEN_MARGIN)) continue;
+        const dist = Math.hypot(stand.x - ctx.selfPos.x, stand.z - ctx.selfPos.z);
+        if (Math.max(0, dist - 0.25) / speed <= p.t * 0.85) {
+          return { stand, contact: p, bounces: totalBounces > 0 ? 1 : 0, feasible: true, power: true };
+        }
+      }
+    }
+
     for (const pass of [0, 1]) {
       for (const p of path) {
         const totalBounces = p.bounces + ctx.bouncesSinceHit;
@@ -181,6 +219,8 @@ export class AIController implements InputProvider {
         if (p.pos.y < PLAYER.REACH_MIN_H + 0.1 || p.pos.y > PLAYER.REACH_MAX_H - 0.1) continue;
 
         const stand = this.standPoint(ctx, p.pos);
+        // Volleys only from outside the kitchen (with room for the follow-through).
+        if (totalBounces === 0 && isInKitchen(ctx.side, stand, PLAYER.FOOT_RADIUS + KITCHEN_MARGIN)) continue;
         const dist = Math.hypot(stand.x - ctx.selfPos.x, stand.z - ctx.selfPos.z);
         const need = Math.max(0, dist - 0.25) / speed;
         const lateness = need - p.t;

@@ -5,6 +5,18 @@ import { ringTexture } from './Textures';
 /** Aim ring scale-in / scale-out time (s). */
 const AIM_POP = 0.12;
 
+export interface AimMarker {
+  x: number;
+  z: number;
+  /** The shot is committed (button held / swing under way): the ring grows and stops pulsing. */
+  locked: boolean;
+  /** Power-shot charge 0..1: tints the ring from yellow toward hot orange. */
+  charge: number;
+}
+
+const AIM_COLOR = new THREE.Color(0xffe14d);
+const AIM_HOT = new THREE.Color(0xff5a2a);
+
 export interface LandingMarker {
   x: number;
   z: number;
@@ -17,6 +29,7 @@ export interface LandingMarker {
 /** Ground markers: the player's aim target and the predicted landing spot of an incoming ball. */
 export class Indicators {
   private aim: THREE.Mesh;
+  private aimMat: THREE.MeshBasicMaterial;
   private landing: THREE.Mesh;
   private landingMat: THREE.MeshBasicMaterial;
   private aimK = 0;
@@ -36,11 +49,12 @@ export class Indicators {
       return m;
     };
     this.aim = mk(0xffe14d, 0.75);
+    this.aimMat = this.aim.material as THREE.MeshBasicMaterial;
     this.landing = mk(0xffffff, 0.55);
     this.landingMat = this.landing.material as THREE.MeshBasicMaterial;
   }
 
-  update(dt: number, aim: { x: number; z: number } | null, landing: LandingMarker | null): void {
+  update(dt: number, aim: AimMarker | null, landing: LandingMarker | null): void {
     this.t += dt;
     // Aim ring pops in and out in place rather than toggling instantly.
     this.aimK = clamp(this.aimK + (aim ? dt : -dt) / AIM_POP, 0, 1);
@@ -48,8 +62,11 @@ export class Indicators {
     if (aim) this.aim.position.set(aim.x, 0.012, aim.z);
     if (this.aim.visible) {
       const pop = 1 - Math.pow(1 - this.aimK, 3);
-      const s = (1 + Math.sin(this.t * 6) * 0.06) * pop;
+      // A committed shot shows a bigger, solid target; a preview pulses gently.
+      const s = (aim?.locked ? 1.45 : 1 + Math.sin(this.t * 6) * 0.06) * pop;
       this.aim.scale.set(s, s, 1);
+      this.aimMat.opacity = aim?.locked ? 1 : 0.7;
+      this.aimMat.color.copy(AIM_COLOR).lerp(AIM_HOT, aim?.charge ?? 0);
     }
 
     this.landing.visible = !!landing;

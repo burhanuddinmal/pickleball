@@ -6,14 +6,21 @@ import { buildEnvironment, OUTDOOR_THEME, type Ambient } from '../court/Environm
 import { NetView } from '../court/Net';
 import { clampServeAim } from '../gameplay/ShotSystem';
 import {
+  applyRallyResult,
   distanceToNearestLine,
-  isGamePoint,
+  hasGamePoint,
   MATCH_TARGETS,
   matchWinner,
+  newScore,
+  SCORING_MODES,
+  scoreFor,
   sideOfZ,
   type MatchTarget,
   type RallyOutcome,
+  type ScoreState,
+  type ScoringMode,
 } from '../gameplay/RuleManager';
+import { copyBallState, createBallState } from '../physics/BallPhysics';
 import { predictLanding } from '../physics/Trajectory';
 import { AIController, AI_PROFILES, type Difficulty } from '../players/AIController';
 import { Athlete } from '../players/Athlete';
@@ -24,7 +31,7 @@ import { HERO_LOOK, PrimitiveAthleteView, RIVAL_LOOK, type AthleteLook, type Ath
 import { BallView } from '../render/BallView';
 import { CameraRig } from '../render/CameraRig';
 import { Effects } from '../render/Effects';
-import { Indicators, type LandingMarker } from '../render/Indicators';
+import { Indicators, type AimMarker, type LandingMarker } from '../render/Indicators';
 import { LineCalls } from '../render/LineCalls';
 import { PaddleSwoosh } from '../render/PaddleSwoosh';
 import { RIVAL_PADDLE, STARTER_PADDLE, type PaddleLook } from '../render/PaddleModel';
@@ -32,7 +39,7 @@ import { detectQuality, SceneManager } from '../render/SceneManager';
 import { SkinnedAthleteView } from '../render/SkinnedAthleteView';
 import { HUD } from '../ui/HUD';
 import { TouchControls } from '../ui/TouchControls';
-import { FAR, NEAR, PLAYER, SIM } from '../utils/Constants';
+import { FAR, NEAR, PLAYER, POWER, SIM } from '../utils/Constants';
 import { aimToWorld, Rng } from '../utils/MathUtils';
 import { GameStateId, GameStateMachine } from './GameState';
 import { HitStop } from './HitStop';
@@ -58,6 +65,15 @@ const DIFFICULTIES = Object.keys(AI_PROFILES) as Difficulty[];
 const UI_ART = `${import.meta.env.BASE_URL}assets/ui/`;
 /** Debug overlay and freeze-frame keys are dev-build only. */
 const DEV = import.meta.env.DEV;
+
+/** Moves larger than this (m) in one tick are teleports (serve reset): snap instead of blending. */
+const SNAP_DIST = 1;
+
+/** Sim state at the start of the latest tick, for render interpolation. */
+interface PrevPose {
+  pos: THREE.Vector3;
+  facing: number;
+}
 
 /** Per-athlete state for footwork dust detection. */
 interface Footwork {
@@ -106,6 +122,16 @@ export class GameManager {
   private menuModal: HTMLElement | null = null;
 
   private accumulator = 0;
+  /**
+   * Render interpolation: views draw these mirrors, blended between the previous and current
+   * 120 Hz sim tick by `alpha` (the accumulator fraction), so motion is smooth at any frame rate.
+   */
+  private alpha = 1;
+  private heroR = new Athlete('hero', NEAR, 'You');
+  private rivalR = new Athlete('rival', FAR, 'CPU');
+  private prevPose = new Map<Athlete, PrevPose>();
+  private prevBall = new THREE.Vector3();
+  private ballR = createBallState();
   private lastFrame = 0;
   private pointTimer = 0;
   private landing: { x: number; z: number } | null = null;
@@ -114,7 +140,10 @@ export class GameManager {
   private landingFlight = 1;
   /** Where the ball last touched the court (for the OUT mark). */
   private lastBounce = new THREE.Vector3();
-  private tally = { hero: 0, rival: 0 };
+  /** Match score, server and service court (see RuleManager scoring). */
+  private score: ScoreState = newScore(NEAR);
+  /** Side-out (traditional) by default; rally scoring is a menu option. */
+  private scoring: ScoringMode = 'sideout';
   /** Bumped on each serve so a late "+1" flyer can't overwrite a newer score. */
   private pointSeq = 0;
   /** Longest rally this match, and the stored best when the match began ("NEW BEST RALLY!"). */
@@ -128,8 +157,6 @@ export class GameManager {
   private customData: Record<string, unknown> = {};
   /** "Reduce effects": no camera kicks, hit-stop, flashes or HUD pops. */
   private reducedFx = false;
-  private nextServer!: Athlete;
-  private nextFromRight = true;
   private debug = false;
   /** Debug freeze: halts simulation and animation without opening the pause menu. */
   private frozen = false;
@@ -141,6 +168,25 @@ export class GameManager {
   private hitPoint = new THREE.Vector3();
   private tipPos = new THREE.Vector3();
   private scratch = new THREE.Vector3();
+
+  private get tally(): { hero: number; rival: number } {
+    return { hero: scoreFor(this.score, this.hero.side), rival: scoreFor(this.score, this.rival.side) };
+  }
+
+  private get nextServer(): Athlete {
+    return this.score.server === this.hero.side ? this.hero : this.rival;
+  }
+
+  private get nextFromRight(): boolean {
+    return this.score.fromRight;
+  }
+
+  /** Who wins the game with the next rally, if anyone (side-out: only the server can). */
+  private gamePointHolder(): 'hero' | 'rival' | null {
+    if (hasGamePoint(this.score, this.hero.side, this.target, this.scoring)) return 'hero';
+    if (hasGamePoint(this.score, this.rival.side, this.target, this.scoring)) return 'rival';
+    return null;
+  }
 
   /** `athleteModel` is the rigged player GLB; null falls back to the primitive players. */
   constructor(gameRoot: HTMLElement, uiRoot: HTMLElement, onProgress: (p: number) => void, athleteModel: GLTF | null = null) {
@@ -156,7 +202,10 @@ export class GameManager {
 
     this.hero = new Athlete('hero', NEAR, 'You');
     this.rival = new Athlete('rival', FAR, 'CPU');
-    for (const a of [this.hero, this.rival]) this.footwork.set(a, { lag: new THREE.Vector3(), cooldown: 0 });
+    for (const a of [this.hero, this.rival]) {
+      this.footwork.set(a, { lag: new THREE.Vector3(), cooldown: 0 });
+      this.prevPose.set(a, { pos: new THREE.Vector3(), facing: 0 });
+    }
     this.touch = new TouchControls(uiRoot);
     this.local = new LocalInputProvider(this.sceneMgr.renderer.domElement, this.pickGround, this.touch);
     this.ai = new AIController(AI_PROFILES.medium, (Date.now() & 0xffff) + 1);
@@ -183,6 +232,7 @@ export class GameManager {
     this.hud = new HUD(uiRoot, 'You', 'CPU');
     this.overlays = this.buildOverlays();
     this.setTarget(this.target, false);
+    this.setScoring(this.scoring, false);
     this.setDifficulty(this.difficulty, false);
     this.setReducedEffects(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false, false);
     this.syncVolumeSliders();
@@ -193,7 +243,6 @@ export class GameManager {
     this.fsm.onChange((to) => this.onStateChange(to));
 
     // A demo rally plays on the court behind the title screen.
-    this.nextServer = this.hero;
     this.setDemoInputs(true);
     this.serveDemo();
     this.cameraRig.snap(this.cameraFocus());
@@ -214,6 +263,8 @@ export class GameManager {
         if (saved.bestStreak !== undefined) this.stats.bestStreak = saved.bestStreak;
         if (saved.difficulty && saved.difficulty in AI_PROFILES) this.setDifficulty(saved.difficulty as Difficulty, false);
         if (saved.customData) this.customData = { ...saved.customData };
+        const { scoring } = this.customData;
+        if (scoring === 'sideout' || scoring === 'rally') this.setScoring(scoring, false);
         if (typeof this.customData.reducedEffects === 'boolean') this.setReducedEffects(this.customData.reducedEffects, false);
         const { musicVolume, sfxVolume } = this.customData;
         if (typeof musicVolume === 'number') this.audio.setBgmVolume(musicVolume);
@@ -277,26 +328,38 @@ export class GameManager {
       // Frozen: only advance when a single-step was requested.
       this.accumulator = 0;
       while (this.stepTicks > 0) {
+        this.capturePrev();
         this.tick(SIM.TICK_DT);
         this.stepTicks--;
       }
+      this.alpha = 1;
     } else if (simulating) {
       const wasStopped = this.hitStop.active;
       worldDt = this.hitStop.scale(dt);
       this.accumulator += worldDt;
       let ticks = 0;
+      let showLatest = false;
       while (this.accumulator >= SIM.TICK_DT && ticks < SIM.MAX_TICKS_PER_FRAME) {
+        this.capturePrev();
         this.tick(SIM.TICK_DT);
         this.accumulator -= SIM.TICK_DT;
         ticks++;
         // A hit-stop that starts mid-frame drops the rest of this frame so the freeze is crisp.
         if (!wasStopped && this.hitStop.active) {
           this.accumulator = 0;
+          showLatest = true; // freeze on the contact itself, not the tick before it
           break;
         }
       }
-      if (ticks === SIM.MAX_TICKS_PER_FRAME) this.accumulator = 0; // drop time rather than spiral
+      if (ticks === SIM.MAX_TICKS_PER_FRAME) {
+        this.accumulator = 0; // drop time rather than spiral
+        showLatest = true;
+      }
+      this.alpha = showLatest ? 1 : Math.min(1, this.accumulator / SIM.TICK_DT);
+    } else {
+      this.alpha = 1;
     }
+    this.interpolate();
     this.render(this.frozen ? 0 : worldDt, this.frozen ? 0 : dt);
   };
 
@@ -313,34 +376,72 @@ export class GameManager {
     }
   }
 
+  /** Records the sim state before a tick so the frame can blend toward the state after it. */
+  private capturePrev(): void {
+    for (const a of [this.hero, this.rival]) {
+      const p = this.prevPose.get(a)!;
+      p.pos.copy(a.pos);
+      p.facing = a.facing;
+    }
+    this.prevBall.copy(this.rally.ball.state.pos);
+  }
+
+  /** Fills the render mirrors with the sim state blended by `alpha` between the last two ticks. */
+  private interpolate(): void {
+    const k = this.alpha;
+    for (const [a, m] of [
+      [this.hero, this.heroR],
+      [this.rival, this.rivalR],
+    ] as const) {
+      const p = this.prevPose.get(a)!;
+      const t = p.pos.distanceTo(a.pos) > SNAP_DIST ? 1 : k;
+      m.side = a.side;
+      m.pos.lerpVectors(p.pos, a.pos, t);
+      m.vel.copy(a.vel);
+      let d = a.facing - p.facing;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      m.facing = p.facing + d * t;
+      Object.assign(m.swing, a.swing);
+      m.holdingBall = a.holdingBall;
+    }
+    const b = this.rally.ball.state;
+    copyBallState(b, this.ballR);
+    if (this.prevBall.distanceTo(b.pos) <= SNAP_DIST) this.ballR.pos.lerpVectors(this.prevBall, b.pos, k);
+  }
+
   /** `worldDt` drives everything in the scene (slowed by hit-stop); `dt` is real frame time. */
   private render(worldDt: number, dt: number): void {
     const r = this.rally;
     const { camera, renderer } = this.sceneMgr;
-    this.heroView.update(this.hero, worldDt);
-    this.rivalView.update(this.rival, worldDt);
-    this.ballView.update(r.ball.state, worldDt, camera);
-    this.heroSwoosh.update(this.hero, this.heroView, camera);
-    this.rivalSwoosh.update(this.rival, this.rivalView, camera);
+    this.heroView.update(this.heroR, worldDt);
+    this.rivalView.update(this.rivalR, worldDt);
+    this.ballView.update(this.ballR, worldDt, camera);
+    this.heroSwoosh.update(this.heroR, this.heroView, camera);
+    this.rivalSwoosh.update(this.rivalR, this.rivalView, camera);
     this.netView.update(worldDt);
     this.lineCalls.update(worldDt);
     this.crowd?.update(worldDt);
     this.ambient?.update(worldDt);
-    this.updateFootwork(this.hero, worldDt);
-    this.updateFootwork(this.rival, worldDt);
+    this.updateFootwork(this.hero, this.heroR, worldDt);
+    this.updateFootwork(this.rival, this.rivalR, worldDt);
     this.heroView.setMarkerPulse(r.phase === 'live' && r.lastHitter !== this.hero && this.fsm.state !== GameStateId.MAIN_MENU);
-    this.cameraRig.update(this.cameraFocus(), dt);
+    this.cameraRig.update(this.cameraFocus(true), dt);
     this.effects.update(worldDt, camera, renderer.domElement.height);
     this.updateIndicators(dt);
+    this.updateChargeMeter();
     this.updateHint();
     this.hud.update(dt);
     if (this.debug || this.frozen) this.hud.setDebug(this.debugText());
     this.sceneMgr.render();
   }
 
-  private cameraFocus() {
+  /** `interpolated` uses the render mirrors (per frame); snaps use the raw sim state. */
+  private cameraFocus(interpolated = false) {
     const r = this.rally;
-    return { player: this.hero.pos, ball: r.ball.state.pos, ballLive: r.phase === 'live', side: this.hero.side };
+    const player = interpolated ? this.heroR.pos : this.hero.pos;
+    const ball = interpolated ? this.ballR.pos : r.ball.state.pos;
+    return { player, ball, ballLive: r.phase === 'live', side: this.hero.side };
   }
 
   // ---------------------------------------------------------------- flow
@@ -379,7 +480,8 @@ export class GameManager {
     el.querySelector('.result')!.textContent = heroWon ? 'YOU WIN!' : 'CPU WINS';
     el.querySelector('.result')!.classList.toggle('win', heroWon);
     this.countUpFinal(el.querySelector('.final')!, this.tally.hero, this.tally.rival);
-    el.querySelector('.sub')!.textContent = `Game to ${this.target} · win by 2 · ${this.difficulty.toUpperCase()} CPU`;
+    const mode = this.scoring === 'sideout' ? 'side-out' : 'rally scoring';
+    el.querySelector('.sub')!.textContent = `Game to ${this.target} · win by 2 · ${mode} · ${this.difficulty.toUpperCase()} CPU`;
     const best = el.querySelector<HTMLElement>('.best-rally')!;
     const newBest = this.matchBestRally > this.bestAtMatchStart && this.matchBestRally >= 4;
     best.classList.toggle('hidden', !newBest);
@@ -410,11 +512,9 @@ export class GameManager {
   }
 
   private newMatch(): void {
-    this.tally = { hero: 0, rival: 0 };
+    this.score = newScore(this.hero.side);
     this.matchBestRally = 0;
     this.bestAtMatchStart = this.stats.bestRally;
-    this.nextServer = this.hero;
-    this.nextFromRight = true;
     this.hud.setTarget(this.target);
     this.hud.setGamePoint(null);
     this.effects.clearConfetti();
@@ -475,6 +575,15 @@ export class GameManager {
     }
   }
 
+  /** Side-out or rally scoring (title screen); takes effect from the next match. */
+  private setScoring(m: ScoringMode, persist = true): void {
+    this.scoring = m;
+    if (persist) this.saveCustom({ scoring: m });
+    for (const b of this.overlays.title.querySelectorAll<HTMLElement>('[data-scoring]')) {
+      b.classList.toggle('selected', b.dataset.scoring === m);
+    }
+  }
+
   private onStateChange(to: GameStateId): void {
     const inMatch = to !== GameStateId.MAIN_MENU && to !== GameStateId.LOADING;
     this.hud.setVisible(inMatch);
@@ -513,18 +622,13 @@ export class GameManager {
   private onRallyEnd(outcome: RallyOutcome, shots: number): void {
     const heroWon = outcome.winner === this.hero.side;
     const prev = { ...this.tally };
-    const wasGamePoint = isGamePoint(prev.hero, prev.rival, this.target) || isGamePoint(prev.rival, prev.hero, this.target);
-    if (outcome.winner !== null) {
-      // Phase 1 tally: winner of the rally serves next. Singles rule: serve from the right on an
-      // even score, from the left on an odd one.
-      const winner = heroWon ? this.hero : this.rival;
-      if (heroWon) this.tally.hero++;
-      else this.tally.rival++;
-      this.nextFromRight = (heroWon ? this.tally.hero : this.tally.rival) % 2 === 0;
-      this.nextServer = winner;
-    }
+    const wasGamePoint = this.gamePointHolder() !== null;
+    const prevServer = this.score.server;
+    if (outcome.winner !== null) this.score = applyRallyResult(this.score, outcome.winner, this.scoring);
+    const scored = prev.hero !== this.tally.hero || prev.rival !== this.tally.rival;
+    const sideOut = outcome.winner !== null && !scored && this.score.server !== prevServer;
     // "+1" flies from where the point ended into the winner's score, which updates on arrival.
-    const fly = outcome.winner !== null && !this.reducedFx && this.toScreen(this.rally.ball.state.pos, this.scratch);
+    const fly = scored && !this.reducedFx && this.toScreen(this.rally.ball.state.pos, this.scratch);
     this.hud.setScores(fly ? prev.hero : this.tally.hero, fly ? prev.rival : this.tally.rival, null);
     if (fly) {
       const seq = this.pointSeq;
@@ -535,13 +639,18 @@ export class GameManager {
     const [big, detail] = this.describeOutcome(outcome, heroWon, shots);
     const { hero, rival } = this.tally;
     const w = matchWinner(hero, rival, this.target);
-    const small = w ? (w === 'a' ? 'GAME — you win the match!' : 'GAME — CPU wins the match') : detail;
-    this.hud.setGamePoint(
-      w ? null : isGamePoint(hero, rival, this.target) ? 'hero' : isGamePoint(rival, hero, this.target) ? 'rival' : null,
-    );
+    const small = w
+      ? w === 'a'
+        ? 'GAME — you win the match!'
+        : 'GAME — CPU wins the match'
+      : sideOut
+        ? `${detail} · SIDE OUT — ${heroWon ? 'your serve' : 'CPU to serve'}`
+        : detail;
+    this.hud.setGamePoint(w ? null : this.gamePointHolder());
     const slam = outcome.reason === 'MISS' && heroWon;
     this.hud.showBanner(big, small, outcome.winner === null ? 'neutral' : heroWon ? 'good' : 'bad', POINT_PAUSE - 0.2, slam);
-    if (outcome.reason === 'OUT_OF_BOUNDS') this.lineCalls.showOut(this.lastBounce.x, this.lastBounce.z);
+    const lineCall = outcome.reason === 'OUT_OF_BOUNDS' || outcome.reason === 'SERVE_IN_KITCHEN' || outcome.reason === 'SERVE_WRONG_COURT';
+    if (lineCall) this.lineCalls.showOut(this.lastBounce.x, this.lastBounce.z);
     if (outcome.winner !== null) {
       this.audio.play(heroWon ? 'pointWon' : 'pointLost');
       this.crowd?.cheer(heroWon ? 1 : 0.6);
@@ -549,7 +658,7 @@ export class GameManager {
       this.heroView.react(heroWon ? 'win' : 'lose');
       this.rivalView.react(heroWon ? 'lose' : 'win');
       // Push in on the OUT mark, otherwise on the point's winner.
-      this.cameraRig.setPointFocus(outcome.reason === 'OUT_OF_BOUNDS' ? this.lastBounce : (heroWon ? this.hero : this.rival).pos);
+      this.cameraRig.setPointFocus(lineCall ? this.lastBounce : (heroWon ? this.hero : this.rival).pos);
       if (wasGamePoint || shots >= SLOWMO.minShots) this.hitStop.slowMo(SLOWMO.seconds, SLOWMO.scale);
     }
     this.pointTimer = POINT_PAUSE;
@@ -568,6 +677,16 @@ export class GameManager {
         return heroWon ? ['WINNER!', 'Unreturnable' + rallyNote] : ['MISSED', 'The ball bounced twice' + rallyNote];
       case 'BALL_STUCK':
         return ['REPLAY', 'Point will be replayed'];
+      case 'SERVE_IN_KITCHEN':
+        return ['FAULT!', heroFault ? 'Your serve landed in the kitchen' : 'CPU served into the kitchen'];
+      case 'SERVE_WRONG_COURT':
+        return ['FAULT!', heroFault ? 'Serve must land in the diagonal court' : 'CPU served into the wrong court'];
+      case 'TWO_BOUNCE_VIOLATION':
+        return ['FAULT!', (heroFault ? 'Let it bounce' : 'CPU volleyed too early') + ' · two-bounce rule'];
+      case 'KITCHEN_VOLLEY':
+        return ['KITCHEN!', (heroFault ? 'You volleyed in the kitchen' : 'CPU volleyed in the kitchen') + rallyNote];
+      case 'FOOT_FAULT':
+        return ['FOOT FAULT!', heroFault ? 'Serve from behind the baseline' : 'CPU stepped on the line'];
     }
   }
 
@@ -582,8 +701,8 @@ export class GameManager {
     bus.on('hit', (e) => {
       const pan = e.pos.x / 6;
       const intensity = Math.min(1, e.speed / 22);
-      const power = intensity > 0.75;
-      (e.athlete === this.hero ? this.heroView : this.rivalView).onHit(intensity);
+      const power = e.power;
+      (e.athlete === this.hero ? this.heroView : this.rivalView).onHit(intensity, power);
       this.audio.play(e.kind === 'serve' ? 'serve' : power ? 'powerHit' : intensity < 0.35 ? 'softHit' : 'hit', intensity, pan, gain());
       const vel = this.rally.ball.state.vel;
       this.effects.hitBurst(e.pos, vel, intensity);
@@ -599,7 +718,7 @@ export class GameManager {
       if (e.kind === 'stroke') this.hitStop.trigger(power ? 0.07 : intensity > 0.45 ? 0.04 : 0);
       if (e.kind === 'stroke' && power) this.cameraRig.punch(1.5);
       if (e.athlete === this.hero && platform.capabilities.haptics) {
-        platform.vibrate?.(intensity > 0.75 ? 35 : 15);
+        platform.vibrate?.(power ? 35 : 15);
       }
       if (this.fsm.state === GameStateId.SERVING) this.fsm.go(GameStateId.RALLY);
       this.hud.setRally(e.shotIndex);
@@ -811,14 +930,16 @@ export class GameManager {
     const controls = this.touch.active
       ? [
           row('Left thumb', 'Drag anywhere on the left half to move'),
-          row('Right side', 'Tap to hit, or swipe to aim: sideways for across the court, up for deeper'),
+          row('Right side', 'Tap to hit · hold, then lift, for a power shot (overhead = smash)'),
+          row('Swipe', 'Aim: sideways for the corners, up for deep, down for short'),
           row('II', 'Pause (top right)'),
         ]
       : [
           row(`${kbd('W A S D')} ${kbd('↑ ← ↓ →')}`, 'Move'),
           row(kbd('SHIFT'), 'Sprint'),
-          row(`${kbd('SPACE')} ${kbd('CLICK')}`, 'Swing'),
-          row('Mouse', 'Point at the far court to aim your shot'),
+          row(`${kbd('SPACE')} ${kbd('CLICK')}`, 'Tap to hit · hold and release for a power shot (overhead = smash)'),
+          row('Aim', `Hold a direction as you swing: ${kbd('A')}/${kbd('D')} corners, ${kbd('W')} deep, ${kbd('S')} short. Nothing held = safe deep shot`),
+          row('Mouse', 'Or click a spot on the far court to aim there'),
           row(`${kbd('ESC')} ${kbd('P')}`, 'Pause'),
           row(kbd('M'), 'Mute'),
         ];
@@ -826,10 +947,15 @@ export class GameManager {
       <div class="howto-head">CONTROLS</div>${controls.join('')}
       <div class="howto-head">RULES</div>
       <ul class="howto-rules">
-        <li>Serve diagonally into the opposite court.</li>
-        <li>Let the serve bounce before you return it.</li>
-        <li>You lose the point if your shot lands out, hits the net, or you let the ball bounce twice.</li>
-        <li>Every rally scores. The winner of a rally serves next.</li>
+        <li>Serve underhand from behind the baseline, diagonally into the opposite service court. It must clear the kitchen: landing in it or on its line is a fault. A serve that clips the net and lands in is good.</li>
+        <li>Two-bounce rule: the return of serve and the third shot must both bounce before they are hit.</li>
+        <li>No volleys in the kitchen: you can't hit the ball out of the air while touching the kitchen or its line, or step in from the momentum of a volley. Balls that bounce in the kitchen can be played from it.</li>
+        <li>You lose the rally if your shot lands out, hits the net, or you let the ball bounce twice. Balls on the line are in.</li>
+        <li>${
+          this.scoring === 'sideout'
+            ? 'Side-out scoring: only the server scores. Lose the rally on your serve and the serve passes over.'
+            : 'Rally scoring: every rally scores, and the winner serves next.'
+        } Serve from the right on an even score, the left on an odd one.</li>
         <li>First to the target score wins, but you must win by 2.</li>
       </ul>`;
   }
@@ -864,6 +990,12 @@ export class GameManager {
             <div class="pick-label">GAME TO <small>(win by 2)</small></div>
             <div class="seg">
               ${MATCH_TARGETS.map((t) => `<button class="seg-opt" data-target="${t}">${t}</button>`).join('')}
+            </div>
+          </div>
+          <div class="pick">
+            <div class="pick-label">SCORING</div>
+            <div class="seg">
+              ${SCORING_MODES.map((m) => `<button class="seg-opt" data-scoring="${m}">${m === 'sideout' ? 'SIDE-OUT' : 'RALLY'}</button>`).join('')}
             </div>
           </div>
         </div>
@@ -902,10 +1034,11 @@ export class GameManager {
         this.closeMenuModal();
         return;
       }
-      const btn = el.closest<HTMLElement>('[data-target],[data-difficulty],[data-a]');
+      const btn = el.closest<HTMLElement>('[data-target],[data-difficulty],[data-scoring],[data-a]');
       if (!btn) return;
-      const { target, difficulty, a } = btn.dataset;
+      const { target, difficulty, scoring, a } = btn.dataset;
       if (target) this.menuPick(() => this.setTarget(Number(target) as MatchTarget));
+      else if (scoring) this.menuPick(() => this.setScoring(scoring as ScoringMode));
       else if (difficulty) this.menuPick(() => this.setDifficulty(difficulty as Difficulty));
       else if (a === 'play') this.startPlaying();
       else if (a === 'howto' || a === 'settings') this.menuPick(() => this.openMenuModal(a));
@@ -987,8 +1120,8 @@ export class GameManager {
   }
 
   /** Dust at the feet on a hard push-off (sprint start or sharp change of direction). */
-  private updateFootwork(a: Athlete, dt: number): void {
-    const fw = this.footwork.get(a)!;
+  private updateFootwork(sim: Athlete, a: Athlete, dt: number): void {
+    const fw = this.footwork.get(sim)!;
     if (dt <= 0) return;
     fw.cooldown -= dt;
     const d = this.scratch.subVectors(a.vel, fw.lag).setY(0);
@@ -1029,12 +1162,19 @@ export class GameManager {
   private updateIndicators(dt: number): void {
     const r = this.rally;
     const intent = this.heroCtl.intent;
-    let aim: { x: number; z: number } | null = null;
+    let aim: AimMarker | null = null;
     const heroServing = r.phase === 'serve' && r.server === this.hero;
     const heroToHit = r.phase === 'live' && r.lastHitter !== this.hero;
     if (intent && (heroServing || heroToHit) && this.fsm.state !== GameStateId.MAIN_MENU) {
-      const a = heroServing ? clampServeAim(r.serveFromRight, intent.aimX, intent.aimDepth) : { aimX: intent.aimX, aimDepth: intent.aimDepth };
-      aim = aimToWorld(this.hero.side, a.aimX, a.aimDepth);
+      // Once the swing is under way the locked direction-at-hit aim is shown; before that, a live
+      // preview of where the held direction would send the ball (committed while charging).
+      const sw = this.hero.swing;
+      const swinging = sw.active && !sw.contact;
+      const src = swinging ? this.heroCtl.swingAim : intent;
+      const a = heroServing ? clampServeAim(r.serveFromRight, src.aimX, src.aimDepth) : src;
+      const p = aimToWorld(this.hero.side, a.aimX, a.aimDepth);
+      const charge = swinging ? this.heroCtl.swingAim.power : intent.charging ? intent.power : 0;
+      aim = { x: p.x, z: p.z, locked: swinging || intent.charging, charge: charge >= POWER.MIN ? charge : 0 };
     }
     let landing: LandingMarker | null = null;
     if (this.landing && r.phase === 'live') {
@@ -1045,15 +1185,29 @@ export class GameManager {
     this.indicators.update(dt, aim, landing);
   }
 
+  /** Charge meter above the hero's head while the swing button is held. */
+  private updateChargeMeter(): void {
+    const intent = this.heroCtl.intent;
+    const show = intent?.charging && this.heroCtl.input === this.local && !this.hero.holdingBall;
+    this.scratch.set(this.heroR.pos.x, PLAYER.MODEL_HEIGHT + 0.35, this.heroR.pos.z);
+    if (show && this.toScreen(this.scratch, this.scratch)) {
+      this.hud.setCharge(intent.power, this.scratch.x, this.scratch.y, intent.power >= POWER.MIN);
+    } else {
+      this.hud.setCharge(null);
+    }
+  }
+
   private updateHint(): void {
     const r = this.rally;
     let text = '';
     if (this.fsm.state === GameStateId.SERVING && r.server === this.hero) {
-      text = this.touch.active ? 'Swipe or tap on the right to serve diagonally' : 'Aim with the mouse · SPACE / CLICK to serve';
+      text = this.touch.active ? 'Tap on the right to serve diagonally (swipe to aim)' : 'SPACE / CLICK to serve · hold A or D to aim';
     } else if (this.fsm.state === GameStateId.SERVING) {
       text = 'Get ready to return — let the serve bounce';
     } else if (this.fsm.state === GameStateId.RALLY && r.lastHitter !== this.hero) {
-      text = this.touch.active ? 'Move to the ball · tap / swipe to hit' : 'Move to the ball · SPACE / CLICK to hit';
+      text = this.touch.active
+        ? 'Tap to hit · hold for power · swipe to aim'
+        : 'SPACE to hit · hold for power · direction keys aim';
     }
     this.hud.setHint(text);
   }

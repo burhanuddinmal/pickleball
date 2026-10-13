@@ -17,6 +17,10 @@ export interface PlayerIntent {
   swing: boolean;
   aimX: number;
   aimDepth: number;
+  /** Charge 0..1 for the swing starting this tick, or the current charge while `charging`. */
+  power: number;
+  /** True while the swing button is held (charging a power shot). */
+  charging: boolean;
 }
 
 /** Read-only snapshot of the world that input providers may observe. Never mutate. */
@@ -56,4 +60,6 @@ export const emptyIntent = (): PlayerIntent => ({
   swing: false,
   aimX: 0,
   aimDepth: 0.75,
+  power: 0,
+  charging: false,
 });
