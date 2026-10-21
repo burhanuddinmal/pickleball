@@ -39,6 +39,7 @@ import { RIVAL_PADDLE, STARTER_PADDLE, type PaddleLook } from '../render/PaddleM
 import { detectQuality, SceneManager } from '../render/SceneManager';
 import { SkinnedAthleteView } from '../render/SkinnedAthleteView';
 import { HUD } from '../ui/HUD';
+import { SwipeTrail } from '../ui/SwipeTrail';
 import { TouchControls } from '../ui/TouchControls';
 import { FAR, NEAR, PLAYER, POWER, SIM } from '../utils/Constants';
 import { aimToWorld, Rng } from '../utils/MathUtils';
@@ -125,6 +126,7 @@ export class GameManager {
   private crowd: Crowd | null;
   private ambient: Ambient | null;
   private hud: HUD;
+  private swipeTrail: SwipeTrail;
   private uiRoot: HTMLElement;
   private overlays: { title: HTMLElement; pause: HTMLElement; matchOver: HTMLElement };
   private ads: AdManager;
@@ -249,6 +251,9 @@ export class GameManager {
     onProgress(0.8);
 
     this.hud = new HUD(uiRoot, 'You', 'CPU');
+    this.swipeTrail = new SwipeTrail(this.hud.root);
+    this.local.swipeFx = this.swipeTrail;
+    this.touch.swipeFx = this.swipeTrail;
     this.ads = new AdManager(
       platform,
       {
@@ -264,6 +269,8 @@ export class GameManager {
     this.setDifficulty(this.difficulty, false);
     this.setReducedEffects(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false, false);
     this.syncVolumeSliders();
+    this.updateMuteBtns();
+    this.updateControlBtns();
     this.renderStats();
     this.bindRallyEvents();
     this.bindGlobalInput();
@@ -321,6 +328,7 @@ export class GameManager {
     if (v) this.hitStop.clear();
     this.effects.flashEnabled = !v;
     this.netView.flashEnabled = !v;
+    this.swipeTrail.reduced = v;
     this.uiRoot.classList.toggle('reduce-fx', v);
     this.updateFxBtns();
     if (persist) this.saveCustom({ reducedEffects: v });
@@ -930,6 +938,7 @@ export class GameManager {
   private updateControlBtns(): void {
     for (const btn of this.uiRoot.querySelectorAll<HTMLElement>('[data-a="controls"]')) {
       btn.textContent = this.controlStyle === 'swipe' ? 'CONTROLS: SWIPE' : 'CONTROLS: AIM & CHARGE';
+      btn.classList.toggle('is-swipe', this.controlStyle === 'swipe');
     }
   }
 
@@ -1151,9 +1160,9 @@ export class GameManager {
           <div class="logo panel-title">SETTINGS</div>
           <label class="slider">MUSIC <input type="range" name="music" min="0" max="100" step="5" /></label>
           <label class="slider">SOUND FX <input type="range" name="sfx" min="0" max="100" step="5" /></label>
-          <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
-          <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
-          <button class="btn secondary" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
+          <button class="art-btn btn-mute" data-a="mute">MUTE AUDIO</button>
+          <button class="art-btn btn-fx" data-a="fx">EFFECTS: FULL</button>
+          <button class="art-btn btn-controls" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
           <button class="btn secondary hidden" data-a="privacy">PRIVACY OPTIONS</button>
           <button class="art-btn btn-done" data-a="close">DONE</button>
         </div>
@@ -1200,9 +1209,9 @@ export class GameManager {
     pause.innerHTML = `<div class="panel"><div class="logo" style="font-size:40px">PAUSED</div>
       <button class="art-btn btn-resume" data-a="resume">RESUME</button>
       <button class="art-btn btn-restart" data-a="restart">RESTART</button>
-      <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
-      <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
-      <button class="btn secondary" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
+      <button class="art-btn btn-mute" data-a="mute">MUTE AUDIO</button>
+      <button class="art-btn btn-fx" data-a="fx">EFFECTS: FULL</button>
+      <button class="art-btn btn-controls" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
       <button class="art-btn btn-main-menu" data-a="menu">MAIN MENU</button></div>`;
     pause.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).dataset.a;

@@ -109,9 +109,42 @@ Per instructions, these assets are stored in the project directory and **have no
   - Clear baseline perspective with emerald non-volley zone (kitchen), regulation net, and atmospheric lighting.
 
 ### 6.2 Decorative Balls, Paddles & VFX
-- **File**: [`decorative_pickleball_paddles.jpg`](file:///c:/Users/lenovo/Desktop/pickleball/public/assets/images/decorative_pickleball_paddles.jpg)
+- **File**: [`decorative_pickleball_paddles.jpg`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/images/decorative_pickleball_paddles.jpg)
 - **Aspect Ratio**: 4:3
 - **Contents**:
   - Perforated neon lime-yellow pickleballs: resting state and high-speed smash with lightning electric trail.
   - High-tech graphite honeycomb paddle and tournament graphic paddle.
   - Smash impact sparks, speed streaks, and burst decals.
+
+---
+
+## 7. Settings & Controls Toggle Buttons (New Assets)
+
+### 7.1 Audio Toggle Button Sheet
+- **File**: [`settings_audio_buttons.jpg`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/images/settings_audio_buttons.jpg)
+- **Aspect Ratio**: 16:9
+- **Contents**:
+  - **Mute Audio**: Translucent dark navy glass pill button with glowing neon cyan border, speaker icon with active sound waves, and crisp bold italic font. Extracted to [`btn-mute-audio.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-mute-audio.png).
+  - **Unmute Audio**: Matching dark navy glass pill button with speaker icon and diagonal mute slash. Extracted to [`btn-unmute-audio.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-unmute-audio.png).
+
+### 7.2 Visual Effects Toggle Button Sheet
+- **File**: [`settings_effects_buttons.jpg`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/images/settings_effects_buttons.jpg)
+- **Aspect Ratio**: 16:9
+- **Contents**:
+  - **Effects: Full**: Luminous cyan border pill button with glowing 8-point electric star burst icon. Extracted to [`btn-fx-full.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-fx-full.png).
+  - **Effects: Reduced**: Matching pill button with subdued, minimalist dimmed star icon. Extracted to [`btn-fx-reduced.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-fx-reduced.png).
+
+### 7.3 Controls Style Toggle Button Sheet
+- **File**: [`settings_controls_buttons.jpg`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/images/settings_controls_buttons.jpg)
+- **Aspect Ratio**: 16:9
+- **Contents**:
+  - **Controls: Aim & Charge**: Neon cyan border pill button featuring target crosshair / aiming reticle icon. Extracted to [`btn-controls-charge.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-controls-charge.png) and [`btn-controls-aim.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-controls-aim.png).
+  - **Controls: Swipe**: Matching pill button featuring touchscreen hand swipe gesture icon with curved trajectory arc. Extracted to [`btn-controls-swipe.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-controls-swipe.png).
+  - **Isolated Icons**: Extracted to [`icon-controls-aim.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/icons/icon-controls-aim.png) and [`icon-controls-swipe.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/icons/icon-controls-swipe.png).
+
+### 7.4 Modular Button Frame Sheet
+- **File**: [`toggle_button_frame.jpg`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/images/toggle_button_frame.jpg)
+- **Aspect Ratio**: 16:9
+- **Contents**:
+  - Clean pill button frames without text or icons in 3 states (Normal, Active Highlight, and Dimmed) for flexible CSS UI styling. Extracted to [`btn-toggle-frame.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-toggle-frame.png), [`btn-toggle-frame-active.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-toggle-frame-active.png), and [`btn-toggle-frame-dim.png`](file:///c:/Users/Desktop/Desktop/pickleball/public/assets/ui/btn-toggle-frame-dim.png).
+

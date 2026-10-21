@@ -1,5 +1,5 @@
 import { directionalAim, pointAim, SWIPE_TAP_PX, swipeAim, type Aim } from '../gameplay/Aim';
-import { screenSize, SwipeTracker, swipePower, type ControlStyle } from '../gameplay/Swipe';
+import { screenSize, SwipeTracker, swipePower, type ControlStyle, type SwipeFx } from '../gameplay/Swipe';
 import { PLAYER, POWER } from '../utils/Constants';
 import { clamp } from '../utils/MathUtils';
 import type { TouchControls } from '../ui/TouchControls';
@@ -39,6 +39,8 @@ export class LocalInputProvider implements InputProvider {
   private mouseSwiping = false;
   enabled = true;
   style: ControlStyle = 'charge';
+  /** Trail feedback for mouse swipes (touch swipes feed it from TouchControls). */
+  swipeFx: SwipeFx | null = null;
 
   constructor(
     private canvas: HTMLElement,
@@ -106,6 +108,7 @@ export class LocalInputProvider implements InputProvider {
       this.mouseSwipe.start(e.clientX, e.clientY, e.timeStamp / 1000);
       this.mouseSwiping = true;
       this.press('mouseSwipe');
+      this.swipeFx?.start(e.clientX, e.clientY, e.timeStamp / 1000);
     } else this.press('mouse');
   };
 
@@ -113,6 +116,7 @@ export class LocalInputProvider implements InputProvider {
   private onWindowPointerMove = (e: PointerEvent): void => {
     if (e.pointerType === 'mouse' && this.mouseSwiping) {
       this.mouseSwipe.move(e.clientX, e.clientY, e.timeStamp / 1000);
+      this.swipeFx?.move(e.clientX, e.clientY, e.timeStamp / 1000);
     }
   };
 
@@ -121,11 +125,17 @@ export class LocalInputProvider implements InputProvider {
     if (this.aimSource === 'mouseSwipe') {
       if (!this.mouseSwiping) return;
       this.mouseSwiping = false;
+      const t = e.timeStamp / 1000;
       // Already released as the ball arrived: that swing used the swipe so far.
-      if (!this.holding) return;
-      this.mouseSwipe.move(e.clientX, e.clientY, e.timeStamp / 1000);
+      if (!this.holding) {
+        this.swipeFx?.end(e.clientX, e.clientY, t, 0);
+        return;
+      }
+      this.mouseSwipe.move(e.clientX, e.clientY, t);
       const { dx, dy } = this.mouseSwipe.delta();
-      this.releaseAim = { kind: 'swipe', dx, dy, speed: this.mouseSwipe.flickSpeed() };
+      const speed = this.mouseSwipe.flickSpeed();
+      this.releaseAim = { kind: 'swipe', dx, dy, speed };
+      this.swipeFx?.end(e.clientX, e.clientY, t, Math.hypot(dx, dy) < SWIPE_TAP_PX ? 0 : swipePower(speed, screenSize()));
       this.release();
       return;
     }

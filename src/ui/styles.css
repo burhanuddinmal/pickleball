@@ -117,8 +117,8 @@ body {
   background: linear-gradient(180deg, rgba(15, 27, 45, 0.7) 0%, rgba(15, 27, 45, 0.1) 32%, rgba(15, 27, 45, 0.1) 52%, rgba(15, 27, 45, 0.88) 100%);
   justify-content: space-between;
   padding: calc(20px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
-  overflow-y: auto;
-  touch-action: pan-y;
+  overflow: hidden;
+  touch-action: none;
 }
 
 .menu-top,
@@ -471,6 +471,7 @@ body {
   font-size: 18px;
   font-weight: 900;
   pointer-events: auto;
+  z-index: 10; /* above the full-screen touch layer (z-index 5) */
   cursor: pointer;
 }
 
@@ -722,13 +723,15 @@ body {
   align-items: center;
   justify-content: center;
   padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
-  overflow-y: auto;
-  touch-action: pan-y;
+  overflow: hidden;
+  touch-action: none;
   z-index: 1;
 }
 
 .menu-modal .panel {
   max-width: 460px;
+  max-height: 100%;
+  min-height: 0;
   margin: auto;
 }
 
@@ -739,6 +742,11 @@ body {
 
 .howto-body {
   width: 100%;
+  /* Only the rules text may scroll, and only when a dialog cannot fit it; the page never does. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  touch-action: pan-y;
   font-size: 14px;
   line-height: 1.45;
 }
@@ -1241,39 +1249,7 @@ body {
   margin-bottom: 2px;
 }
 
-/* Sound and effects toggles (title settings and pause menu) show their current state. */
-.btn[data-a='mute'],
-.btn[data-a='fx'] {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.btn[data-a='mute']::before,
-.btn[data-a='fx']::before {
-  content: '';
-  width: 24px;
-  height: 24px;
-  flex: none;
-  background: center / contain no-repeat;
-}
-
-.btn[data-a='mute']::before {
-  background-image: url('/assets/ui/icon-sound-on.png');
-}
-
-.btn[data-a='mute'].is-off::before {
-  background-image: url('/assets/ui/icon-sound-off.png');
-}
-
-.btn[data-a='fx']::before {
-  background-image: url('/assets/ui/icon-fx-on.png');
-}
-
-.btn[data-a='fx'].is-off::before {
-  background-image: url('/assets/ui/icon-fx-off.png');
-}
+/* Sound, effects, and controls toggles are now .art-btn image buttons styled below. */
 
 /* Dialogs: glass panel with a cyan rim, like the settings art. */
 .menu-modal .panel {
@@ -1437,6 +1413,43 @@ body {
   background-image: url('/assets/ui/btn-main-menu.png');
 }
 
+.btn-mute,
+.btn-fx,
+.btn-controls {
+  width: min(220px, 62vw);
+  aspect-ratio: 520 / 111;
+}
+
+.btn-mute {
+  background-image: url('/assets/ui/btn-mute-audio.png'), url('/assets/ui/btn-unmute-audio.png');
+  background-size: contain, 0 0;
+}
+
+.btn-mute.is-off {
+  background-image: url('/assets/ui/btn-unmute-audio.png');
+  background-size: contain;
+}
+
+.btn-fx {
+  background-image: url('/assets/ui/btn-fx-full.png'), url('/assets/ui/btn-fx-reduced.png');
+  background-size: contain, 0 0;
+}
+
+.btn-fx.is-off {
+  background-image: url('/assets/ui/btn-fx-reduced.png');
+  background-size: contain;
+}
+
+.btn-controls {
+  background-image: url('/assets/ui/btn-controls-charge.png'), url('/assets/ui/btn-controls-swipe.png');
+  background-size: contain, 0 0;
+}
+
+.btn-controls.is-swipe {
+  background-image: url('/assets/ui/btn-controls-swipe.png');
+  background-size: contain;
+}
+
 .overlay .art-btn {
   pointer-events: auto;
 }
@@ -1481,4 +1494,283 @@ body {
 .charge-meter.full .charge-fill {
   background: #ff6a3d;
   box-shadow: 0 0 10px rgba(255, 90, 40, 0.9);
+}
+
+/* Swipe-style swing trail (HUD layer, drawn by SwipeTrail). */
+.swipe-trail {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* ---------- Phones in landscape ----------
+   ~380px tall minus the ad banner. Everything is sized from the height so nothing overflows,
+   and the stacked menus become rows or two columns. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .overlay,
+  .menu-modal {
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  }
+
+  /* Title: logo on top, setup card, then PLAY flanked by the secondary buttons in one row. */
+  .title {
+    justify-content: space-evenly;
+    gap: 6px;
+    padding-top: calc(6px + var(--safe-top));
+    padding-bottom: calc(6px + var(--safe-bottom));
+  }
+
+  .menu-top {
+    flex: 0 1 auto;
+    min-height: 0;
+  }
+
+  .menu-top .logo-img {
+    width: auto;
+    height: clamp(56px, 22vh, 150px);
+  }
+
+  .menu-stats {
+    display: none;
+  }
+
+  /* Card on its own row; HOW TO PLAY, PLAY, SETTINGS on the next. */
+  .menu-bottom {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    justify-content: center;
+    justify-items: center;
+    align-items: center;
+    gap: 6px 14px;
+  }
+
+  .menu-card {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+    gap: 16px;
+    padding: 6px 12px;
+  }
+
+  .title .tap {
+    order: 2;
+  }
+
+  .kbd-hint {
+    display: none;
+  }
+
+  .pick {
+    gap: 3px;
+  }
+
+  .pick-label {
+    font-size: 10px;
+  }
+
+  .seg-opt {
+    min-width: 40px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .title .tap.art-btn {
+    --h: clamp(44px, 17vh, 84px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 205);
+  }
+
+  .menu-links {
+    display: contents;
+  }
+
+  .btn-howto,
+  .btn-settings {
+    --h: clamp(30px, 11vh, 52px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 140);
+  }
+
+  .btn-howto {
+    order: 1;
+  }
+
+  .btn-settings {
+    order: 3;
+  }
+
+  .swipe-hint {
+    width: 100px;
+    height: 100px;
+    padding: 12px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  /* Shared button sizing for pause, settings and match over. */
+  .btn {
+    min-width: 0;
+    width: 100%;
+    padding: 8px 14px;
+    font-size: 14px;
+    border-radius: 12px;
+  }
+
+  .btn[data-a='mute']::before,
+  .btn[data-a='fx']::before {
+    width: 20px;
+    height: 20px;
+  }
+
+  .panel {
+    min-width: 0;
+    padding: 12px 18px;
+    gap: 8px;
+  }
+
+  .btn-resume,
+  .btn-play-again {
+    --h: clamp(34px, 12vh, 56px);
+    height: var(--h);
+    width: calc(var(--h) * 397 / 110);
+  }
+
+  .btn-restart,
+  .btn-main-menu {
+    --h: clamp(30px, 11vh, 50px);
+    height: var(--h);
+    width: calc(var(--h) * 263 / 90);
+  }
+
+  .btn-mute,
+  .btn-fx,
+  .btn-controls {
+    --h: clamp(26px, 9vh, 44px);
+    height: var(--h);
+    width: calc(var(--h) * 520 / 111);
+  }
+
+  .btn-got-it,
+  .btn-done {
+    --h: clamp(30px, 11vh, 48px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 135);
+    margin-top: 0;
+  }
+
+  /* Pause: title across the top, actions on the left, toggles on the right. */
+  .overlay.dim:not(.match-over) > .panel {
+    display: grid;
+    grid-template-columns: auto minmax(180px, auto);
+    align-items: center;
+    justify-items: center;
+    gap: 8px 22px;
+  }
+
+  .overlay.dim:not(.match-over) > .panel > .logo {
+    grid-column: 1 / -1;
+    font-size: 28px !important;
+  }
+
+  .overlay.dim:not(.match-over) [data-a='resume'] { grid-area: 2 / 1; }
+  .overlay.dim:not(.match-over) [data-a='restart'] { grid-area: 3 / 1; }
+  .overlay.dim:not(.match-over) [data-a='menu'] { grid-area: 4 / 1; }
+  .overlay.dim:not(.match-over) [data-a='mute'] { grid-area: 2 / 2; }
+  .overlay.dim:not(.match-over) [data-a='fx'] { grid-area: 3 / 2; }
+  .overlay.dim:not(.match-over) [data-a='controls'] { grid-area: 4 / 2; }
+
+  /* Settings: sliders and DONE on the left, toggles on the right. */
+  [data-modal='settings'] .panel {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr);
+    align-items: center;
+    justify-items: center;
+    gap: 8px 22px;
+    max-width: 640px;
+  }
+
+  [data-modal='settings'] .panel-title { grid-column: 1 / -1; }
+  [data-modal='settings'] .slider:nth-of-type(1) { grid-area: 2 / 1; }
+  [data-modal='settings'] .slider:nth-of-type(2) { grid-area: 3 / 1; }
+  [data-modal='settings'] [data-a='close'] { grid-area: 4 / 1 / span 2; }
+  [data-modal='settings'] [data-a='mute'] { grid-area: 2 / 2; }
+  [data-modal='settings'] [data-a='fx'] { grid-area: 3 / 2; }
+  [data-modal='settings'] [data-a='controls'] { grid-area: 4 / 2; }
+  [data-modal='settings'] [data-a='privacy'] { grid-area: 5 / 2; }
+
+  .slider input {
+    height: 24px;
+  }
+
+  /* How to play: art on the left, rules on the right (they scroll inside the panel if needed). */
+  [data-modal='howto'] .panel {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px 20px;
+    width: min(760px, 100%);
+    max-width: none;
+    height: 100%;
+  }
+
+  [data-modal='howto'] .panel-title { grid-area: 1 / 1 / 2 / -1; justify-self: center; }
+  [data-modal='howto'] .howto-art {
+    display: block;
+    grid-area: 2 / 1 / 4 / 2;
+    align-self: center;
+    max-height: 100%;
+    max-width: 34vw;
+  }
+  [data-modal='howto'] .howto-body { grid-area: 2 / 2; height: 100%; }
+  [data-modal='howto'] [data-a='close'] { grid-area: 3 / 2; justify-self: center; }
+
+  .howto-row {
+    grid-template-columns: 8em 1fr;
+  }
+
+  /* Match over: result on the left, actions on the right, along the bottom. */
+  .overlay.dim.match-over {
+    padding-bottom: calc(10px + var(--safe-bottom));
+  }
+
+  .overlay.dim.match-over > .panel {
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-auto-flow: row dense;
+    align-items: center;
+    justify-items: center;
+    gap: 4px 26px;
+  }
+
+  .match-over .result,
+  .match-over .best-rally,
+  .match-over .final,
+  .match-over .sub {
+    grid-column: 1;
+  }
+
+  .match-over .result {
+    font-size: 30px !important;
+  }
+
+  .match-over .final {
+    font-size: 28px;
+  }
+
+  .match-over .sub {
+    margin-bottom: 0;
+  }
+
+  .match-over .btn,
+  .match-over .art-btn {
+    grid-column: 2;
+  }
+
+  .match-over .btn.second-chance {
+    font-size: 13px;
+  }
 }

@@ -14,6 +14,7 @@
     "build:android": "tsc --noEmit && vite build --mode android",
     "android:sync": "npm run build:android && node scripts/sync-admob-app-id.js android && cap sync android",
     "build:android:release": "tsc --noEmit && node scripts/sync-admob-app-id.js android.production && vite build --mode android.production && cap sync android",
+    "build:all": "node scripts/build-all.js",
     "check:imports": "node scripts/check-imports.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",

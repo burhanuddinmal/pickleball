@@ -1,4 +1,5 @@
-import { SwipeTracker, type ControlStyle } from '../gameplay/Swipe';
+import { SWIPE_TAP_PX } from '../gameplay/Aim';
+import { screenSize, SwipeTracker, swipePower, type ControlStyle, type SwipeFx } from '../gameplay/Swipe';
 
 const JOY_RADIUS = 55;
 const HINTS: Record<ControlStyle, string> = {
@@ -27,6 +28,9 @@ export class TouchControls {
   private swipeStart = { x: 0, y: 0 };
   private tracker = new SwipeTracker();
   private hint: HTMLDivElement;
+  private style: ControlStyle = 'charge';
+  /** Swipe-style trail feedback, if any. */
+  swipeFx: SwipeFx | null = null;
   private pressCbs: (() => void)[] = [];
   private releaseCbs: ((dx: number, dy: number, speed: number) => void)[] = [];
 
@@ -70,6 +74,7 @@ export class TouchControls {
   }
 
   setStyle(style: ControlStyle): void {
+    this.style = style;
     this.hint.textContent = HINTS[style];
   }
 
@@ -103,6 +108,7 @@ export class TouchControls {
     this.swipeStart = { x: e.clientX, y: e.clientY };
     this.swipe = { dx: 0, dy: 0 };
     this.tracker.start(e.clientX, e.clientY, e.timeStamp / 1000);
+    if (this.style === 'swipe') this.swipeFx?.start(e.clientX, e.clientY, e.timeStamp / 1000);
     for (const cb of this.pressCbs) cb();
   };
 
@@ -122,6 +128,7 @@ export class TouchControls {
       this.swipe.dx = e.clientX - this.swipeStart.x;
       this.swipe.dy = e.clientY - this.swipeStart.y;
       this.tracker.move(e.clientX, e.clientY, e.timeStamp / 1000);
+      if (this.style === 'swipe') this.swipeFx?.move(e.clientX, e.clientY, e.timeStamp / 1000);
     }
   };
 
@@ -136,6 +143,10 @@ export class TouchControls {
       const dy = e.clientY - this.swipeStart.y;
       this.tracker.move(e.clientX, e.clientY, e.timeStamp / 1000);
       const speed = this.tracker.flickSpeed();
+      if (this.style === 'swipe') {
+        const power = Math.hypot(dx, dy) < SWIPE_TAP_PX ? 0 : swipePower(speed, screenSize());
+        this.swipeFx?.end(e.clientX, e.clientY, e.timeStamp / 1000, power);
+      }
       this.swipeId = null;
       this.swipe = null;
       for (const cb of this.releaseCbs) cb(dx, dy, speed);

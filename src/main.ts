@@ -43,3 +43,11 @@ async function boot(): Promise<void> {
 }
 
 void boot();
+
+// Mobile browsers: lock to landscape where the API allows it (needs fullscreen on most; failures are fine).
+if (window.matchMedia?.('(pointer: coarse)').matches) {
+  const lock = () => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> })
+    .lock?.('landscape').catch(() => {});
+  lock();
+  window.addEventListener('pointerdown', lock, { once: true });
+}

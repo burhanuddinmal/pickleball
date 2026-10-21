@@ -64,3 +64,10 @@ export const screenSize = (): number => Math.min(window.innerWidth, window.inner
 
 /** Player-chosen controls: hold-to-charge power, or power from swipe speed. */
 export type ControlStyle = 'charge' | 'swipe';
+
+/** Visual feedback for a swipe (screen px, time in seconds); `power` is the shot's 0..1 power. */
+export interface SwipeFx {
+  start(x: number, y: number, t: number): void;
+  move(x: number, y: number, t: number): void;
+  end(x: number, y: number, t: number, power: number): void;
+}
