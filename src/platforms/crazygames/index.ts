@@ -2,15 +2,19 @@ import type { PlatformAdapter, PlatformCapabilities, SaveData } from '../types';
 
 const STORAGE_KEY = 'pickle-smash.save';
 
+/** CrazyGames HTML5 SDK v3 (https://docs.crazygames.com/sdk/). */
 interface CrazyGamesSDK {
-  init?: () => Promise<void>;
-  getEnvironment?: (cb: (err: unknown, env: string) => void) => void;
-  game?: {
+  init: () => Promise<void>;
+  /** 'local' | 'crazygames' | 'disabled' (disabled = not on CrazyGames; ads and data are unavailable) */
+  environment?: string;
+  game: {
     gameplayStart: () => void;
     gameplayStop: () => void;
+    loadingStart?: () => void;
+    loadingStop?: () => void;
     happytime?: () => void;
   };
-  ad?: {
+  ad: {
     requestAd: (
       type: 'midgame' | 'rewarded',
       callbacks?: {
@@ -34,6 +38,11 @@ declare global {
   }
 }
 
+/**
+ * CrazyGames rules followed here: gameplayStart/Stop around actual play, midgame ads only at
+ * breaks (the game calls them from the match-over screen; the SDK also rate-limits them), rewarded
+ * only on an explicit player choice, and no in-game banners.
+ */
 export class CrazyGamesAdapter implements PlatformAdapter {
   readonly id = 'crazygames';
   readonly capabilities: PlatformCapabilities = {
@@ -51,8 +60,8 @@ export class CrazyGamesAdapter implements PlatformAdapter {
   private adListeners: Array<(active: boolean) => void> = [];
   private pauseListeners: Array<() => void> = [];
   private resumeListeners: Array<() => void> = [];
-  private lastAdTime = 0;
-  private readonly adCooldownMs = 60000; // 60s recommended between midgame ads
+  private ready = false;
+  private inGameplay = false;
 
   constructor() {
     if (typeof document !== 'undefined') {
@@ -67,105 +76,72 @@ export class CrazyGamesAdapter implements PlatformAdapter {
   }
 
   private get sdk(): CrazyGamesSDK | undefined {
+    if (!this.ready) return undefined;
     return typeof window !== 'undefined' ? window.CrazyGames?.SDK : undefined;
   }
 
   async init(): Promise<void> {
-    const sdk = this.sdk;
-    if (sdk?.init) {
-      try {
-        await sdk.init();
-        console.log('[CrazyGames] SDK initialized');
-      } catch (err) {
-        console.warn('[CrazyGames] SDK initialization warning:', err);
-      }
-    } else {
-      console.log('[CrazyGames] SDK ready or running without explicit init()');
+    const sdk = typeof window !== 'undefined' ? window.CrazyGames?.SDK : undefined;
+    if (!sdk?.init) {
+      console.warn('[CrazyGames] SDK v3 script not loaded; ads and cloud save disabled');
+      return;
     }
+    try {
+      await sdk.init();
+      this.ready = true;
+      sdk.game.loadingStart?.();
+      console.log('[CrazyGames] SDK initialized, environment:', sdk.environment);
+    } catch (err) {
+      console.warn('[CrazyGames] SDK initialization failed:', err);
+    }
+  }
+
+  onGameReady(): void {
+    try {
+      this.sdk?.game.loadingStop?.();
+    } catch (err) {
+      console.warn('[CrazyGames] loadingStop error:', err);
+    }
+  }
+
+  private requestAd(type: 'midgame' | 'rewarded'): Promise<boolean> {
+    const sdk = this.sdk;
+    if (!sdk?.ad?.requestAd) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let started = false;
+      let completed = false;
+      const finish = (watched: boolean) => {
+        if (completed) return;
+        completed = true;
+        if (started) this.notifyAdState(false);
+        resolve(watched);
+      };
+      try {
+        sdk.ad.requestAd(type, {
+          adStarted: () => {
+            started = true;
+            this.notifyAdState(true);
+          },
+          adFinished: () => finish(true),
+          adError: (err) => {
+            // e.g. 'unfilled' or an ad blocker: just carry on.
+            console.warn(`[CrazyGames] ${type} ad error:`, err);
+            finish(false);
+          },
+        });
+      } catch (err) {
+        console.error(`[CrazyGames] Failed to request ${type} ad:`, err);
+        finish(false);
+      }
+    });
   }
 
   async showInterstitialAd(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastAdTime < this.adCooldownMs) {
-      console.log('[CrazyGames] Skipping interstitial ad (cooldown active)');
-      return;
-    }
-    const sdk = this.sdk;
-    if (!sdk?.ad?.requestAd) {
-      console.log('[CrazyGames] SDK ad module unavailable, skipping interstitial');
-      return;
-    }
-
-    return new Promise<void>((resolve) => {
-      this.lastAdTime = Date.now();
-      let completed = false;
-
-      const finish = () => {
-        if (!completed) {
-          completed = true;
-          this.notifyAdState(false);
-          resolve();
-        }
-      };
-
-      try {
-        sdk.ad!.requestAd('midgame', {
-          adStarted: () => {
-            this.notifyAdState(true);
-          },
-          adFinished: () => {
-            finish();
-          },
-          adError: (err) => {
-            console.warn('[CrazyGames] Interstitial ad error:', err);
-            finish();
-          },
-        });
-      } catch (err) {
-        console.error('[CrazyGames] Failed to request interstitial ad:', err);
-        finish();
-      }
-    });
+    await this.requestAd('midgame');
   }
 
   async showRewardedAd(): Promise<boolean> {
-    const sdk = this.sdk;
-    if (!sdk?.ad?.requestAd) {
-      console.log('[CrazyGames] SDK ad module unavailable, simulating rewarded ad');
-      return true;
-    }
-
-    return new Promise<boolean>((resolve) => {
-      let rewarded = false;
-      let completed = false;
-
-      const finish = () => {
-        if (!completed) {
-          completed = true;
-          this.notifyAdState(false);
-          resolve(rewarded);
-        }
-      };
-
-      try {
-        sdk.ad!.requestAd('rewarded', {
-          adStarted: () => {
-            this.notifyAdState(true);
-          },
-          adFinished: () => {
-            rewarded = true;
-            finish();
-          },
-          adError: (err) => {
-            console.warn('[CrazyGames] Rewarded ad error:', err);
-            finish();
-          },
-        });
-      } catch (err) {
-        console.error('[CrazyGames] Failed to request rewarded ad:', err);
-        finish();
-      }
-    });
+    return this.requestAd('rewarded');
   }
 
   async saveProgress(data: Partial<SaveData>): Promise<void> {
@@ -207,18 +183,21 @@ export class CrazyGamesAdapter implements PlatformAdapter {
   }
 
   onGameplayStart(): void {
-    const sdk = this.sdk;
+    // Called on every serve; the SDK wants one start per stretch of play.
+    if (this.inGameplay) return;
+    this.inGameplay = true;
     try {
-      sdk?.game?.gameplayStart();
+      this.sdk?.game.gameplayStart();
     } catch (err) {
       console.warn('[CrazyGames] Error on gameplayStart:', err);
     }
   }
 
   onGameplayStop(): void {
-    const sdk = this.sdk;
+    if (!this.inGameplay) return;
+    this.inGameplay = false;
     try {
-      sdk?.game?.gameplayStop();
+      this.sdk?.game.gameplayStop();
     } catch (err) {
       console.warn('[CrazyGames] Error on gameplayStop:', err);
     }

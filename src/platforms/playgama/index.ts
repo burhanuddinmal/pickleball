@@ -1,16 +1,25 @@
 import type { PlatformAdapter, PlatformCapabilities, SaveData } from '../types';
 
 const STORAGE_KEY = 'pickle-smash.save';
+/** Give up waiting if the bridge never reports an ad opening (e.g. its own interstitial delay). */
+const AD_START_TIMEOUT_MS = 2500;
+/** Hard cap so a lost 'closed' event can't leave the game paused forever. */
+const AD_MAX_MS = 120_000;
 
+/** Playgama Bridge v2 (https://wiki.playgama.com/playgama/sdk/engines/core/advertisement). */
 interface PlayGamaBridge {
   initialize: () => Promise<void>;
+  EVENT_NAME?: Record<string, string>;
   advertisement: {
     isInterstitialSupported?: boolean;
-    showInterstitial: () => Promise<void>;
-    showRewarded: () => Promise<void>;
-    showBanner?: () => Promise<void>;
-    hideBanner?: () => Promise<void>;
-    on?: (event: string, callback: (...args: unknown[]) => void) => void;
+    isRewardedSupported?: boolean;
+    /** Results arrive as state events, not through a returned promise. */
+    showInterstitial: (placement?: string) => unknown;
+    showRewarded: (placement?: string) => unknown;
+    on?: (event: string, callback: (state: string) => void) => void;
+  };
+  platform?: {
+    sendMessage?: (message: string) => unknown;
   };
   storage: {
     get: (key: string | string[]) => Promise<unknown>;
@@ -32,7 +41,8 @@ export class PlayGamaAdapter implements PlatformAdapter {
   readonly capabilities: PlatformCapabilities = {
     ads: true,
     rewardedAds: true,
-    banner: true,
+    // Banners are off: many Playgama hosts show their own, and an in-game one would cover the UI.
+    banner: false,
     cloudSave: true,
     leaderboards: true,
     achievements: false,
@@ -44,8 +54,8 @@ export class PlayGamaAdapter implements PlatformAdapter {
   private adListeners: Array<(active: boolean) => void> = [];
   private pauseListeners: Array<() => void> = [];
   private resumeListeners: Array<() => void> = [];
-  private lastAdTime = 0;
-  private readonly adCooldownMs = 60000;
+  /** Whoever is waiting on the ad in flight receives each state event. */
+  private adWaiter: ((kind: 'interstitial' | 'rewarded', state: string) => void) | null = null;
 
   constructor() {
     if (typeof document !== 'undefined') {
@@ -68,6 +78,11 @@ export class PlayGamaAdapter implements PlatformAdapter {
     if (bridge?.initialize) {
       try {
         await bridge.initialize();
+        const ev = bridge.EVENT_NAME ?? {};
+        bridge.advertisement.on?.(ev.INTERSTITIAL_STATE_CHANGED ?? 'interstitial_state_changed', (st) =>
+          this.adWaiter?.('interstitial', st),
+        );
+        bridge.advertisement.on?.(ev.REWARDED_STATE_CHANGED ?? 'rewarded_state_changed', (st) => this.adWaiter?.('rewarded', st));
         console.log('[PlayGama] Bridge SDK initialized');
       } catch (err) {
         console.warn('[PlayGama] Bridge initialization error:', err);
@@ -77,68 +92,77 @@ export class PlayGamaAdapter implements PlatformAdapter {
     }
   }
 
+  onGameReady(): void {
+    this.send('game_ready');
+  }
+
+  /** Shows one ad and resolves with whether it was watched to the end (rewarded: reward granted). */
+  private runAd(kind: 'interstitial' | 'rewarded'): Promise<boolean> {
+    const ad = this.bridge?.advertisement;
+    const supported = kind === 'interstitial' ? ad?.isInterstitialSupported : ad?.isRewardedSupported;
+    if (!ad || supported === false) return Promise.resolve(false);
+
+    return new Promise<boolean>((resolve) => {
+      let opened = false;
+      let rewarded = false;
+      let done = false;
+      const finish = (ok: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(startTimer);
+        clearTimeout(maxTimer);
+        this.adWaiter = null;
+        if (opened) this.notifyAdState(false);
+        resolve(ok);
+      };
+      const startTimer = setTimeout(() => {
+        if (!opened) finish(false);
+      }, AD_START_TIMEOUT_MS);
+      const maxTimer = setTimeout(() => finish(kind === 'rewarded' ? rewarded : opened), AD_MAX_MS);
+
+      this.adWaiter = (k, state) => {
+        if (k !== kind) return;
+        if (state === 'loading' || state === 'opened') {
+          clearTimeout(startTimer);
+          if (state === 'opened' && !opened) {
+            opened = true;
+            this.notifyAdState(true);
+          }
+        } else if (state === 'rewarded') {
+          rewarded = true;
+        } else if (state === 'closed') {
+          finish(kind === 'rewarded' ? rewarded : true);
+        } else if (state === 'failed') {
+          finish(false);
+        }
+      };
+
+      try {
+        const r = kind === 'interstitial' ? ad.showInterstitial() : ad.showRewarded();
+        if (r instanceof Promise) r.catch((err: unknown) => {
+          console.warn(`[PlayGama] ${kind} ad error:`, err);
+          finish(false);
+        });
+      } catch (err) {
+        console.warn(`[PlayGama] ${kind} ad error:`, err);
+        finish(false);
+      }
+    });
+  }
+
   async showInterstitialAd(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastAdTime < this.adCooldownMs) {
-      console.log('[PlayGama] Skipping interstitial (cooldown active)');
-      return;
-    }
-
-    const bridge = this.bridge;
-    if (!bridge?.advertisement?.showInterstitial) {
-      console.log('[PlayGama] advertisement.showInterstitial not available');
-      return;
-    }
-
-    this.lastAdTime = Date.now();
-    this.notifyAdState(true);
-    try {
-      await bridge.advertisement.showInterstitial();
-    } catch (err) {
-      console.warn('[PlayGama] Interstitial ad error:', err);
-    } finally {
-      this.notifyAdState(false);
-    }
+    await this.runAd('interstitial');
   }
 
   async showRewardedAd(): Promise<boolean> {
-    const bridge = this.bridge;
-    if (!bridge?.advertisement?.showRewarded) {
-      console.log('[PlayGama] advertisement.showRewarded not available, granting reward');
-      return true;
-    }
+    return this.runAd('rewarded');
+  }
 
-    this.notifyAdState(true);
+  private send(message: string): void {
     try {
-      await bridge.advertisement.showRewarded();
-      return true;
-    } catch (err) {
-      console.warn('[PlayGama] Rewarded ad error or dismissed:', err);
-      return false;
-    } finally {
-      this.notifyAdState(false);
-    }
-  }
-
-  async showBanner(): Promise<void> {
-    const bridge = this.bridge;
-    if (bridge?.advertisement?.showBanner) {
-      try {
-        await bridge.advertisement.showBanner();
-      } catch (err) {
-        console.warn('[PlayGama] Show banner error:', err);
-      }
-    }
-  }
-
-  async hideBanner(): Promise<void> {
-    const bridge = this.bridge;
-    if (bridge?.advertisement?.hideBanner) {
-      try {
-        await bridge.advertisement.hideBanner();
-      } catch (err) {
-        console.warn('[PlayGama] Hide banner error:', err);
-      }
+      void this.bridge?.platform?.sendMessage?.(message);
+    } catch {
+      // Not every host supports platform messages.
     }
   }
 
@@ -196,12 +220,18 @@ export class PlayGamaAdapter implements PlatformAdapter {
     }
   }
 
+  private inGameplay = false;
+
   onGameplayStart(): void {
-    console.log('[PlayGama] onGameplayStart()');
+    if (this.inGameplay) return;
+    this.inGameplay = true;
+    this.send('gameplay_started');
   }
 
   onGameplayStop(): void {
-    console.log('[PlayGama] onGameplayStop()');
+    if (!this.inGameplay) return;
+    this.inGameplay = false;
+    this.send('gameplay_stopped');
   }
 
   onPause(cb: () => void): void {

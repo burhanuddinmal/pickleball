@@ -41,8 +41,8 @@ export class ItchAdapter implements PlatformAdapter {
   }
 
   async showRewardedAd(): Promise<boolean> {
-    // No ads on itch.io, resolve true for uninhibited player experience
-    return true;
+    // No ads on itch.io (rewardedAds is false, so nothing offers one)
+    return false;
   }
 
   async saveProgress(data: Partial<SaveData>): Promise<void> {

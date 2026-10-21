@@ -6,10 +6,12 @@ import { StatusBar } from '@capacitor/status-bar';
 import { SplashScreen } from '@capacitor/splash-screen';
 import {
   AdMob,
+  BannerAdPluginEvents,
   BannerAdPosition,
   BannerAdSize,
   RewardAdPluginEvents,
   type AdMobRewardItem,
+  type AdmobConsentInfo,
 } from '@capacitor-community/admob';
 import type { PlatformAdapter, PlatformCapabilities, SaveData } from '../types';
 
@@ -38,9 +40,14 @@ export class AndroidAdapter implements PlatformAdapter {
   private pauseListeners: Array<() => void> = [];
   private resumeListeners: Array<() => void> = [];
   private backListeners: Array<() => void> = [];
-  private lastAdTime = 0;
-  private readonly adCooldownMs = 45000;
+  private bannerListeners: Array<(h: number) => void> = [];
+  private bannerHeight = 0;
   private isTesting = true;
+  /** UMP result; false (no consent yet / SDK not ready) means no ad requests at all. */
+  private canRequestAds = false;
+  private privacyRequired = false;
+  /** 'none' = never loaded, 'hidden' = loaded and paused (resume is cheap, no reload). */
+  private bannerState: 'none' | 'shown' | 'hidden' = 'none';
 
   constructor() {
     this.isTesting = import.meta.env.VITE_ADMOB_IS_TESTING !== 'false';
@@ -87,18 +94,19 @@ export class AndroidAdapter implements PlatformAdapter {
         console.warn('[Android] StatusBar/SplashScreen setup warning:', err);
       }
 
-      // Initialize AdMob and handle UMP Consent
+      // Initialize AdMob and handle UMP consent (GDPR / US states) before any ad request
       try {
         await AdMob.initialize({
           initializeForTesting: this.isTesting,
         });
 
-        // Request user consent information (UMP / GDPR)
-        const consentInfo = await AdMob.requestConsentInfo().catch(() => null);
+        let consentInfo = await AdMob.requestConsentInfo().catch(() => null);
         if (consentInfo?.isConsentFormAvailable && consentInfo.status === 'REQUIRED') {
-          await AdMob.showConsentForm().catch(() => {});
+          consentInfo = await AdMob.showConsentForm().catch(() => consentInfo);
         }
-        console.log('[Android] AdMob initialized successfully');
+        this.applyConsent(consentInfo);
+        await AdMob.addListener(BannerAdPluginEvents.SizeChanged, (size) => this.notifyBanner(size.height));
+        console.log('[Android] AdMob initialized; canRequestAds =', this.canRequestAds);
       } catch (err) {
         console.warn('[Android] AdMob initialization error:', err);
       }
@@ -107,13 +115,25 @@ export class AndroidAdapter implements PlatformAdapter {
     }
   }
 
-  async showInterstitialAd(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastAdTime < this.adCooldownMs) {
-      console.log('[Android] Skipping interstitial (cooldown active)');
-      return;
-    }
+  private applyConsent(info: AdmobConsentInfo | null): void {
+    // Outside consent regions UMP reports canRequestAds = true; a failed request still allows ads
+    // (Google then serves per its defaults) unless the user is known to need a form.
+    this.canRequestAds = info ? info.canRequestAds : true;
+    this.privacyRequired = info?.privacyOptionsRequirementStatus === 'REQUIRED';
+  }
 
+  privacyOptionsRequired(): boolean {
+    return this.privacyRequired;
+  }
+
+  async showPrivacyOptions(): Promise<void> {
+    if (!Capacitor.isNativePlatform()) return;
+    await AdMob.showPrivacyOptionsForm();
+    this.applyConsent(await AdMob.requestConsentInfo().catch(() => null));
+    if (!this.canRequestAds) await this.hideBanner();
+  }
+
+  async showInterstitialAd(): Promise<void> {
     if (!Capacitor.isNativePlatform()) {
       console.log('[Android] Web fallback: simulated interstitial ad');
       this.notifyAdState(true);
@@ -122,8 +142,8 @@ export class AndroidAdapter implements PlatformAdapter {
       return;
     }
 
+    if (!this.canRequestAds) return;
     const adId = import.meta.env.VITE_ADMOB_INTERSTITIAL_ID || DEFAULT_TEST_INTERSTITIAL;
-    this.lastAdTime = Date.now();
     this.notifyAdState(true);
 
     try {
@@ -148,6 +168,7 @@ export class AndroidAdapter implements PlatformAdapter {
       return true;
     }
 
+    if (!this.canRequestAds) return false;
     const adId = import.meta.env.VITE_ADMOB_REWARDED_ID || DEFAULT_TEST_REWARDED;
     this.notifyAdState(true);
 
@@ -181,27 +202,45 @@ export class AndroidAdapter implements PlatformAdapter {
   }
 
   async showBanner(): Promise<void> {
-    if (!Capacitor.isNativePlatform()) return;
-    const adId = import.meta.env.VITE_ADMOB_BANNER_ID || DEFAULT_TEST_BANNER;
+    if (!Capacitor.isNativePlatform() || !this.canRequestAds || this.bannerState === 'shown') return;
+    const wasHidden = this.bannerState === 'hidden';
+    this.bannerState = 'shown';
     try {
-      await AdMob.showBanner({
-        adId,
-        adSize: BannerAdSize.BANNER,
-        position: BannerAdPosition.BOTTOM_CENTER,
-        isTesting: this.isTesting,
-      });
+      if (wasHidden) {
+        await AdMob.resumeBanner();
+      } else {
+        await AdMob.showBanner({
+          adId: import.meta.env.VITE_ADMOB_BANNER_ID || DEFAULT_TEST_BANNER,
+          adSize: BannerAdSize.ADAPTIVE_BANNER,
+          position: BannerAdPosition.BOTTOM_CENTER,
+          isTesting: this.isTesting,
+        });
+      }
     } catch (err) {
       console.warn('[Android] Show banner error:', err);
+      this.bannerState = wasHidden ? 'hidden' : 'none';
     }
   }
 
   async hideBanner(): Promise<void> {
-    if (!Capacitor.isNativePlatform()) return;
+    if (!Capacitor.isNativePlatform() || this.bannerState !== 'shown') return;
+    this.bannerState = 'hidden';
     try {
       await AdMob.hideBanner();
     } catch (err) {
       console.warn('[Android] Hide banner error:', err);
     }
+    this.notifyBanner(0);
+  }
+
+  onBannerSizeChange(cb: (heightPx: number) => void): void {
+    this.bannerListeners.push(cb);
+    cb(this.bannerHeight); // the banner may have loaded before this listener existed
+  }
+
+  private notifyBanner(height: number): void {
+    this.bannerHeight = height;
+    for (const cb of this.bannerListeners) cb(height);
   }
 
   async saveProgress(data: Partial<SaveData>): Promise<void> {

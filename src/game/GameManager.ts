@@ -45,6 +45,7 @@ import { GameStateId, GameStateMachine } from './GameState';
 import { HitStop } from './HitStop';
 import { RallyManager } from './RallyManager';
 import { platform } from '../platforms';
+import { AdManager, DEFAULT_INTERSTITIAL_POLICY } from './AdManager';
 
 const POINT_PAUSE = 1.9;
 /** In-bounds first bounces this close (m) to a sideline or baseline get a "CLOSE!" call. */
@@ -60,11 +61,18 @@ const FOOT_COOLDOWN = 0.35;
 /** Title-screen demo: pause (s) between demo points, and how loud its sounds are under the menu music. */
 const DEMO_POINT_PAUSE = 1.6;
 const DEMO_SFX_GAIN = 0.45;
+const SECOND_CHANCE_LABEL = '▶ WATCH AD: REPLAY MATCH POINT';
 const DIFFICULTIES = Object.keys(AI_PROFILES) as Difficulty[];
 /** Menu art cut from the sheets in public/assets/images by scripts/extract-menu-assets.py. */
 const UI_ART = `${import.meta.env.BASE_URL}assets/ui/`;
 /** Debug overlay and freeze-frame keys are dev-build only. */
 const DEV = import.meta.env.DEV;
+
+/** Dev only: `?adcooldown=0` lets every match-over break show an interstitial. */
+const AD_POLICY =
+  DEV && typeof location !== 'undefined' && new URLSearchParams(location.search).get('adcooldown') === '0'
+    ? { minMatches: 1, minIntervalMs: 0 }
+    : DEFAULT_INTERSTITIAL_POLICY;
 
 /** Moves larger than this (m) in one tick are teleports (serve reset): snap instead of blending. */
 const SNAP_DIST = 1;
@@ -118,6 +126,15 @@ export class GameManager {
   private hud: HUD;
   private uiRoot: HTMLElement;
   private overlays: { title: HTMLElement; pause: HTMLElement; matchOver: HTMLElement };
+  private ads: AdManager;
+  /** The player's mute setting before an ad muted everything; restored afterwards. */
+  private mutedBeforeAd = false;
+  /** Score before the latest rally, for the rewarded "replay match point". */
+  private scoreBeforeRally: ScoreState = newScore(NEAR);
+  /** Stats as they were before the match-over tally, restored if the match is rescued. */
+  private statsBeforeEnd = { matchesPlayed: 0, matchesWon: 0, bestRally: 0, winStreak: 0, bestStreak: 0 };
+  /** The rewarded second chance is offered once per match. */
+  private secondChanceUsed = false;
   /** Open title-screen dialog ("settings" / "howto"), if any. */
   private menuModal: HTMLElement | null = null;
 
@@ -230,6 +247,15 @@ export class GameManager {
     onProgress(0.8);
 
     this.hud = new HUD(uiRoot, 'You', 'CPU');
+    this.ads = new AdManager(
+      platform,
+      {
+        onAdStart: () => this.onAdStart(),
+        onAdEnd: () => this.onAdEnd(),
+        onBannerSize: (h) => document.documentElement.style.setProperty('--ad-banner-h', `${h}px`),
+      },
+      AD_POLICY,
+    );
     this.overlays = this.buildOverlays();
     this.setTarget(this.target, false);
     this.setScoring(this.scoring, false);
@@ -316,6 +342,11 @@ export class GameManager {
 
   private frame = (now: number): void => {
     requestAnimationFrame(this.frame);
+    // A fullscreen ad owns the screen: no simulation or rendering underneath it.
+    if (this.ads.isAdActive) {
+      this.lastFrame = now;
+      return;
+    }
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
     this.fps = this.fps * 0.95 + (dt > 0 ? 1 / dt : 60) * 0.05;
@@ -495,25 +526,27 @@ export class GameManager {
     this.hud.setHint('');
     this.hud.hideBanner();
     this.audio.play(heroWon ? 'pointWon' : 'pointLost');
+    const chance = el.querySelector<HTMLButtonElement>('[data-a="chance"]')!;
+    chance.classList.toggle('hidden', heroWon || this.secondChanceUsed || !this.ads.rewardedAvailable);
+    chance.disabled = false;
+    chance.textContent = SECOND_CHANCE_LABEL;
     this.fsm.go(GameStateId.MATCH_OVER);
 
     platform.onGameplayStop();
     void platform.submitScore(this.tally.hero);
+    this.statsBeforeEnd = { ...this.stats };
     this.stats.matchesPlayed = (this.stats.matchesPlayed ?? 0) + 1;
     if (heroWon) this.stats.matchesWon = (this.stats.matchesWon ?? 0) + 1;
     this.stats.winStreak = heroWon ? this.stats.winStreak + 1 : 0;
     this.stats.bestStreak = Math.max(this.stats.bestStreak, this.stats.winStreak);
     void platform.saveProgress(this.stats);
     this.renderStats();
-
-    if (platform.capabilities.ads) {
-      void platform.showInterstitialAd();
-    }
   }
 
   private newMatch(): void {
     this.score = newScore(this.hero.side);
     this.matchBestRally = 0;
+    this.secondChanceUsed = false;
     this.bestAtMatchStart = this.stats.bestRally;
     this.hud.setTarget(this.target);
     this.hud.setGamePoint(null);
@@ -593,6 +626,8 @@ export class GameManager {
     this.overlays.pause.classList.toggle('hidden', to !== GameStateId.PAUSED);
     this.overlays.matchOver.classList.toggle('hidden', to !== GameStateId.MATCH_OVER);
     if (to !== GameStateId.MAIN_MENU) this.closeMenuModal();
+    // Banner on the menus only: it would cover the court and touch controls during play.
+    this.ads.setBanner(to === GameStateId.MAIN_MENU || to === GameStateId.PAUSED || to === GameStateId.MATCH_OVER);
     if (to === GameStateId.PAUSED) {
       this.accumulator = 0;
       this.updateMuteBtns();
@@ -624,6 +659,7 @@ export class GameManager {
     const prev = { ...this.tally };
     const wasGamePoint = this.gamePointHolder() !== null;
     const prevServer = this.score.server;
+    this.scoreBeforeRally = this.score;
     if (outcome.winner !== null) this.score = applyRallyResult(this.score, outcome.winner, this.scoring);
     const scored = prev.hero !== this.tally.hero || prev.rival !== this.tally.rival;
     const sideOut = outcome.winner !== null && !scored && this.score.server !== prevServer;
@@ -820,7 +856,7 @@ export class GameManager {
         const d = DIFFICULTIES[DIFFICULTIES.indexOf(this.difficulty) + step];
         if (step && d) this.menuPick(() => this.setDifficulty(d));
       } else if (this.fsm.state === GameStateId.MATCH_OVER && (e.code === 'Space' || e.code === 'Enter')) {
-        this.newMatch();
+        void this.leaveMatchOver(() => this.newMatch());
       }
     });
     this.hud.pauseButton.addEventListener('click', () => this.togglePause());
@@ -839,20 +875,11 @@ export class GameManager {
       } else if (this.fsm.state === GameStateId.PAUSED) {
         this.goToMenu();
       } else if (this.fsm.state === GameStateId.MATCH_OVER) {
-        this.goToMenu();
+        void this.leaveMatchOver(() => this.goToMenu());
       } else if (this.fsm.state === GameStateId.MAIN_MENU) {
         if (this.menuModal) this.closeMenuModal();
         else platform.exitApp?.();
       }
-    });
-    platform.onAdStateChange?.((active) => {
-      if (active) {
-        this.audio.setMuted(true);
-        if (!this.fsm.isPaused) this.fsm.pause();
-      } else {
-        this.audio.setMuted(false);
-      }
-      this.updateMuteBtns();
     });
   }
 
@@ -913,6 +940,7 @@ export class GameManager {
       modal.querySelector<HTMLImageElement>('.howto-art')!.src = `${UI_ART}howto-${this.touch.active ? 'touch' : 'keyboard'}.jpg`;
       this.renderHowTo(modal.querySelector('.howto-body')!);
     }
+    if (name === 'settings') this.updatePrivacyBtn();
     modal.classList.remove('hidden');
     this.menuModal = modal;
     modal.querySelector<HTMLElement>('[data-a="close"]')?.focus({ preventScroll: true });
@@ -966,6 +994,71 @@ export class GameManager {
     this.audio.play('click');
     this.setDemoInputs(false);
     this.newMatch();
+  }
+
+  // ---------------------------------------------------------------- ads
+
+  private onAdStart(): void {
+    this.mutedBeforeAd = this.audio.muted;
+    this.audio.setMuted(true);
+    // Placements are breaks only, but a portal can start an ad on its own: never leave play running.
+    const st = this.fsm.state;
+    if (st === GameStateId.SERVING || st === GameStateId.RALLY || st === GameStateId.POINT_END) this.fsm.pause();
+  }
+
+  private onAdEnd(): void {
+    this.audio.setMuted(this.mutedBeforeAd);
+    this.updateMuteBtns();
+    this.accumulator = 0;
+    this.lastFrame = performance.now();
+  }
+
+  /** Leaving the match-over screen is the one interstitial break; `next` runs once the ad is done. */
+  private async leaveMatchOver(next: () => void): Promise<void> {
+    if (this.fsm.state !== GameStateId.MATCH_OVER || this.ads.busy) return;
+    this.ads.matchFinished();
+    await this.ads.interstitialAtBreak();
+    if (this.fsm.state === GameStateId.MATCH_OVER) next();
+  }
+
+  /** Rewarded: undo the CPU's match-winning rally and replay match point. */
+  private async secondChance(btn: HTMLButtonElement): Promise<void> {
+    if (this.fsm.state !== GameStateId.MATCH_OVER || this.ads.busy || this.secondChanceUsed) return;
+    btn.disabled = true;
+    const earned = await this.ads.rewarded();
+    if (this.fsm.state !== GameStateId.MATCH_OVER) return;
+    if (!earned) {
+      btn.textContent = 'NO AD AVAILABLE — TRY LATER';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = SECOND_CHANCE_LABEL;
+      }, 2500);
+      return;
+    }
+    this.secondChanceUsed = true;
+    this.stats = { ...this.statsBeforeEnd };
+    void platform.saveProgress(this.stats);
+    this.renderStats();
+    this.score = this.scoreBeforeRally;
+    this.effects.clearConfetti();
+    this.hud.setGamePoint(this.gamePointHolder());
+    this.beginServe();
+    this.cameraRig.snap(this.cameraFocus()); // also ends the match-over orbit
+    this.hud.callout('SECOND CHANCE!', 2);
+  }
+
+  private async openPrivacyOptions(): Promise<void> {
+    try {
+      await platform.showPrivacyOptions?.();
+    } catch (err) {
+      console.warn('[GameManager] privacy options failed:', err);
+    }
+    this.updatePrivacyBtn();
+  }
+
+  private updatePrivacyBtn(): void {
+    const btn = this.overlays.title.querySelector<HTMLElement>('[data-a="privacy"]');
+    btn?.classList.toggle('hidden', !platform.privacyOptionsRequired?.());
   }
 
   private buildOverlays() {
@@ -1024,6 +1117,7 @@ export class GameManager {
           <label class="slider">SOUND FX <input type="range" name="sfx" min="0" max="100" step="5" /></label>
           <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
           <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
+          <button class="btn secondary hidden" data-a="privacy">PRIVACY OPTIONS</button>
           <button class="art-btn btn-done" data-a="close">DONE</button>
         </div>
       </div>`;
@@ -1047,6 +1141,7 @@ export class GameManager {
         this.menuPick(() => this.audio.setMuted(!this.audio.muted));
         this.updateMuteBtns();
       } else if (a === 'fx') this.menuPick(() => this.setReducedEffects(!this.reducedFx));
+      else if (a === 'privacy') this.menuPick(() => void this.openPrivacyOptions());
     });
     title.addEventListener('input', (e) => {
       const input = e.target as HTMLInputElement;
@@ -1095,13 +1190,17 @@ export class GameManager {
       <div class="best-rally hidden"></div>
       <div class="final"></div>
       <div class="sub"></div>
+      <button class="btn second-chance hidden" data-a="chance">${SECOND_CHANCE_LABEL}</button>
       <button class="art-btn btn-play-again" data-a="again">PLAY AGAIN</button>
       <button class="art-btn btn-main-menu" data-a="menu">MAIN MENU</button></div>`;
     matchOver.addEventListener('click', (e) => {
-      const a = (e.target as HTMLElement).dataset.a;
-      if (a) this.audio.play('click');
-      if (a === 'again') this.newMatch();
-      if (a === 'menu') this.goToMenu();
+      const target = e.target as HTMLElement;
+      const a = target.dataset.a;
+      if (!a || this.ads.busy) return;
+      this.audio.play('click');
+      if (a === 'chance') void this.secondChance(target as HTMLButtonElement);
+      if (a === 'again') void this.leaveMatchOver(() => this.newMatch());
+      if (a === 'menu') void this.leaveMatchOver(() => this.goToMenu());
     });
 
     this.uiRoot.append(title, pause, matchOver);

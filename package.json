@@ -12,6 +12,8 @@
     "build:playgama": "tsc --noEmit && vite build --mode playgama",
     "build:itch": "tsc --noEmit && vite build --mode itch",
     "build:android": "tsc --noEmit && vite build --mode android",
+    "android:sync": "npm run build:android && node scripts/sync-admob-app-id.js android && cap sync android",
+    "build:android:release": "tsc --noEmit && node scripts/sync-admob-app-id.js android.production && vite build --mode android.production && cap sync android",
     "check:imports": "node scripts/check-imports.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -19,6 +21,7 @@
   },
   "dependencies": {
     "@capacitor-community/admob": "^8.2.1",
+    "@capacitor/android": "^8.5.3",
     "@capacitor/app": "^8.1.2",
     "@capacitor/core": "^8.5.3",
     "@capacitor/haptics": "^8.0.2",
@@ -28,6 +31,7 @@
     "three": "^0.186.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
     "@types/three": "^0.186.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.4",

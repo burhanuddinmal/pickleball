@@ -44,13 +44,25 @@ export interface PlatformAdapter {
 
   /**
    * Display a rewarded ad.
-   * Resolves true if reward was earned, false otherwise.
+   * Resolves true only if the reward was earned; false when skipped, failed or no ad was available.
    */
   showRewardedAd(): Promise<boolean>;
 
-  /** Optional banner controls */
+  /** Optional banner controls (only called when `capabilities.banner`); both are idempotent. */
   showBanner?(): Promise<void>;
   hideBanner?(): Promise<void>;
+
+  /** Banner height in CSS px whenever it changes (0 when hidden), so the UI can keep clear of it. */
+  onBannerSizeChange?(cb: (heightPx: number) => void): void;
+
+  /** Ad consent (UMP): true when the user must be offered a "Privacy options" entry point. */
+  privacyOptionsRequired?(): boolean;
+
+  /** Opens the consent provider's privacy options form. */
+  showPrivacyOptions?(): Promise<void>;
+
+  /** Notify platform that loading finished and the game is interactive. */
+  onGameReady?(): void;
 
   /** Persist progression data */
   saveProgress(data: Partial<SaveData>): Promise<void>;

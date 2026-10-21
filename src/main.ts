@@ -10,7 +10,9 @@ async function boot(): Promise<void> {
 
   try {
     setProgress(0.1);
-    await initPlatform();
+    const platform = await initPlatform();
+    // Banner from the loading screen on (GameManager hides it once play starts).
+    if (platform.capabilities.banner) void platform.showBanner?.().catch(() => {});
     setProgress(0.2);
     const athleteModel = await loadAthleteModel(ATHLETE_MODEL_URL, (p) => setProgress(0.2 + p * 0.2)).catch((err) => {
       console.warn('Player model failed to load; using primitive players.', err);
@@ -31,6 +33,7 @@ async function boot(): Promise<void> {
     setTimeout(() => {
       loading.classList.add('hidden');
       game.start();
+      platform.onGameReady?.();
     }, 250);
     if (import.meta.env.DEV) (window as unknown as { game: GameManager }).game = game;
   } catch (err) {

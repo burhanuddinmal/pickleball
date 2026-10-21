@@ -8,7 +8,9 @@
   --radius: 16px;
   --font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Menus only: AdManager sets the ad banner's height here, so everything bottom-anchored clears it. */
+  --ad-banner-h: 0px;
+  --safe-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--ad-banner-h));
 }
 
 * {
@@ -59,6 +61,7 @@ body {
   gap: 18px;
   pointer-events: auto;
   z-index: 20;
+  padding-bottom: var(--safe-bottom);
 }
 
 .hidden {
@@ -509,6 +512,18 @@ body {
 .btn.secondary {
   background: rgba(255, 255, 255, 0.14);
   color: var(--white);
+}
+
+/* Rewarded "second chance" on the match-over screen (opt-in ad). */
+.btn.second-chance {
+  background: linear-gradient(180deg, #4fe0b8, var(--rival));
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .dim {

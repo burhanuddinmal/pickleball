@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
         transformIndexHtml(html: string) {
           let scriptTag = '';
           if (mode === 'crazygames') {
-            scriptTag = '<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>';
+            scriptTag = '<script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>';
           } else if (mode === 'playgama') {
             scriptTag = '<script src="https://bridge.playgama.com/v2/stable/playgama-bridge.js"></script>';
           }

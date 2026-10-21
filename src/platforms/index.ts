@@ -21,7 +21,7 @@ const fallbackAdapter: PlatformAdapter = {
   async init() {},
   async showInterstitialAd() {},
   async showRewardedAd() {
-    return true;
+    return false;
   },
   async saveProgress() {},
   async loadProgress() {
@@ -60,7 +60,8 @@ export async function initPlatform(): Promise<PlatformAdapter> {
         currentAdapter = new ItchAdapter();
         break;
       }
-      case 'android': {
+      case 'android':
+      case 'android.production': {
         const { AndroidAdapter } = await import('./android');
         currentAdapter = new AndroidAdapter();
         break;
