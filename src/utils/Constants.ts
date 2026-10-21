@@ -126,6 +126,15 @@ export const POWER = {
   RECOVERY: 0.28,
 } as const;
 
+/** "Swipe" control style: a flick's speed sets the shot's power. */
+export const SWIPE = {
+  /** Flick speed is measured over this much of the swipe before release (s). */
+  SAMPLE_WINDOW: 0.08,
+  /** Flick speeds in screen-heights per second: at or below SLOW no power, at FAST full power. */
+  SLOW: 1.0,
+  FAST: 4.0,
+} as const;
+
 /** Shot targeting: 3×3 target zones and error scaling. */
 export const AIM = {
   /** Aim assist: zone targets sit this far (m) inside the sidelines / baseline. */

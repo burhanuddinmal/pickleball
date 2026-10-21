@@ -1,10 +1,17 @@
+import { SwipeTracker, type ControlStyle } from '../gameplay/Swipe';
+
 const JOY_RADIUS = 55;
+const HINTS: Record<ControlStyle, string> = {
+  charge: 'TAP to hit · HOLD for power · SWIPE to aim',
+  swipe: 'SWIPE to hit and aim · FASTER = more power',
+};
 
 /**
  * Mobile controls: a floating joystick on the left half of the screen, and a swing area on the
  * right half. Touch down starts charging, lifting the finger hits: a quick tap is a normal shot at
  * the default target, holding charges a power shot, and the swipe direction picks the target zone
- * (sideways = across the court, up = deep, down = short).
+ * (sideways = across the court, up = deep, down = short). In the "swipe" control style the flick
+ * speed at lift-off sets the power instead of the hold time.
  */
 export class TouchControls {
   active = false;
@@ -18,8 +25,10 @@ export class TouchControls {
   private joyOrigin = { x: 0, y: 0 };
   private swipeId: number | null = null;
   private swipeStart = { x: 0, y: 0 };
+  private tracker = new SwipeTracker();
+  private hint: HTMLDivElement;
   private pressCbs: (() => void)[] = [];
-  private releaseCbs: ((dx: number, dy: number) => void)[] = [];
+  private releaseCbs: ((dx: number, dy: number, speed: number) => void)[] = [];
 
   constructor(parent: HTMLElement) {
     this.layer = document.createElement('div');
@@ -34,10 +43,10 @@ export class TouchControls {
     this.knob = document.createElement('div');
     this.knob.className = 'joy-knob';
     this.base.appendChild(this.knob);
-    const hint = document.createElement('div');
-    hint.className = 'swipe-hint';
-    hint.textContent = 'TAP to hit · HOLD for power · SWIPE to aim';
-    this.layer.append(this.base, hint);
+    this.hint = document.createElement('div');
+    this.hint.className = 'swipe-hint';
+    this.hint.textContent = HINTS.charge;
+    this.layer.append(this.base, this.hint);
     parent.appendChild(this.layer);
 
     left.addEventListener('pointerdown', this.joyDown);
@@ -60,12 +69,21 @@ export class TouchControls {
     this.layer.classList.toggle('hidden', !(v && this.active));
   }
 
+  setStyle(style: ControlStyle): void {
+    this.hint.textContent = HINTS[style];
+  }
+
+  /** Live flick speed (px/s) of the swing finger, 0 when it is up. */
+  swipeSpeed(): number {
+    return this.swipeId === null ? 0 : this.tracker.flickSpeed(performance.now() / 1000);
+  }
+
   onPress(cb: () => void): void {
     this.pressCbs.push(cb);
   }
 
-  /** Called when the swing finger lifts, with the swipe vector (px, screen space). */
-  onRelease(cb: (dx: number, dy: number) => void): void {
+  /** Called when the swing finger lifts, with the swipe vector (px, screen space) and flick speed (px/s). */
+  onRelease(cb: (dx: number, dy: number, speed: number) => void): void {
     this.releaseCbs.push(cb);
   }
 
@@ -84,6 +102,7 @@ export class TouchControls {
     this.swipeId = e.pointerId;
     this.swipeStart = { x: e.clientX, y: e.clientY };
     this.swipe = { dx: 0, dy: 0 };
+    this.tracker.start(e.clientX, e.clientY, e.timeStamp / 1000);
     for (const cb of this.pressCbs) cb();
   };
 
@@ -102,6 +121,7 @@ export class TouchControls {
     } else if (e.pointerId === this.swipeId && this.swipe) {
       this.swipe.dx = e.clientX - this.swipeStart.x;
       this.swipe.dy = e.clientY - this.swipeStart.y;
+      this.tracker.move(e.clientX, e.clientY, e.timeStamp / 1000);
     }
   };
 
@@ -114,9 +134,11 @@ export class TouchControls {
     } else if (e.pointerId === this.swipeId) {
       const dx = e.clientX - this.swipeStart.x;
       const dy = e.clientY - this.swipeStart.y;
+      this.tracker.move(e.clientX, e.clientY, e.timeStamp / 1000);
+      const speed = this.tracker.flickSpeed();
       this.swipeId = null;
       this.swipe = null;
-      for (const cb of this.releaseCbs) cb(dx, dy);
+      for (const cb of this.releaseCbs) cb(dx, dy, speed);
     }
   };
 }

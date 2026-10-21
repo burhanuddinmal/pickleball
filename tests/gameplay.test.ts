@@ -3,12 +3,13 @@ import { Vector3 } from 'three';
 import { RallyManager } from '../src/game/RallyManager';
 import { defaultAim, directionalAim, pointAim, ROW_DEPTH, SIDE_COLUMN_X, snapAim, swipeAim } from '../src/gameplay/Aim';
 import { aimErrorScale, buildStroke, contactQuality, strokeKind } from '../src/gameplay/ShotSystem';
+import { SwipeTracker, swipePower } from '../src/gameplay/Swipe';
 import { createBallState, launchBall } from '../src/physics/BallPhysics';
 import { predictLanding } from '../src/physics/Trajectory';
 import { Athlete } from '../src/players/Athlete';
 import { emptyIntent, type InputContext, type InputProvider, type PlayerIntent } from '../src/players/InputProvider';
 import { PlayerController } from '../src/players/PlayerController';
-import { AIM, COURT, FAR, NEAR, PHYSICS, PLAYER, POWER, SIM } from '../src/utils/Constants';
+import { AIM, COURT, FAR, NEAR, PHYSICS, PLAYER, POWER, SIM, SWIPE } from '../src/utils/Constants';
 import { aimToWorld, Rng } from '../src/utils/MathUtils';
 
 // ---------------------------------------------------------------- movement feel
@@ -306,6 +307,56 @@ class Hitter implements InputProvider {
     return this.intent;
   }
 }
+
+describe('swipe control style', () => {
+  const SCREEN = 800;
+
+  /** Pointer samples every 1/120 s moving straight up at `pxPerSec`, starting at `t0`. */
+  const drag = (tr: SwipeTracker, from: { y: number; t: number }, pxPerSec: number, seconds: number) => {
+    let { y, t } = from;
+    const dt = 1 / 120;
+    for (let k = 0; k < Math.round(seconds / dt); k++) {
+      y -= pxPerSec * dt;
+      t += dt;
+      tr.move(0, y, t);
+    }
+    return { y, t };
+  };
+
+  it('measures the flick at release, not the average over the whole swipe', () => {
+    const tr = new SwipeTracker();
+    tr.start(0, 0, 0);
+    const end = drag(tr, drag(tr, { y: 0, t: 0 }, 200, 0.5), 3000, 0.1);
+    expect(tr.flickSpeed()).toBeCloseTo(3000, -2);
+    expect(tr.delta().dy).toBeCloseTo(end.y, 6);
+  });
+
+  it('a pointer held still after the flick slows the live speed down', () => {
+    const tr = new SwipeTracker();
+    tr.start(0, 0, 0);
+    const end = drag(tr, { y: 0, t: 0 }, 3000, 0.1);
+    expect(tr.flickSpeed(end.t + SWIPE.SAMPLE_WINDOW * 2)).toBe(0);
+  });
+
+  it('maps speed to power: none when slow, rising, full when fast', () => {
+    expect(swipePower(SWIPE.SLOW * SCREEN * 0.9, SCREEN)).toBe(0);
+    expect(swipePower(SWIPE.FAST * SCREEN * 1.5, SCREEN)).toBe(1);
+    let prev = -1;
+    for (let v = SWIPE.SLOW; v <= SWIPE.FAST; v += 0.25) {
+      const p = swipePower(v * SCREEN, SCREEN);
+      expect(p).toBeGreaterThan(prev);
+      prev = p;
+    }
+  });
+
+  it('a slow swipe plays a normal shot; a fast one a power shot, or a smash overhead', () => {
+    const slow = swipePower(SWIPE.SLOW * SCREEN * 1.2, SCREEN);
+    const fast = swipePower(SWIPE.FAST * SCREEN, SCREEN);
+    expect(strokeKind(1.0, slow)).toBe('normal');
+    expect(strokeKind(1.0, fast)).toBe('power');
+    expect(strokeKind(POWER.SMASH_HEIGHT + 0.2, fast)).toBe('smash');
+  });
+});
 
 describe('hit events carry an explicit power flag', () => {
   for (const [power, expected] of [

@@ -5,6 +5,7 @@ import type { Crowd } from '../court/Crowd';
 import { buildEnvironment, OUTDOOR_THEME, type Ambient } from '../court/Environment';
 import { NetView } from '../court/Net';
 import { clampServeAim } from '../gameplay/ShotSystem';
+import type { ControlStyle } from '../gameplay/Swipe';
 import {
   applyRallyResult,
   distanceToNearestLine,
@@ -174,6 +175,7 @@ export class GameManager {
   private customData: Record<string, unknown> = {};
   /** "Reduce effects": no camera kicks, hit-stop, flashes or HUD pops. */
   private reducedFx = false;
+  private controlStyle: ControlStyle = 'charge';
   private debug = false;
   /** Debug freeze: halts simulation and animation without opening the pause menu. */
   private frozen = false;
@@ -292,6 +294,8 @@ export class GameManager {
         const { scoring } = this.customData;
         if (scoring === 'sideout' || scoring === 'rally') this.setScoring(scoring, false);
         if (typeof this.customData.reducedEffects === 'boolean') this.setReducedEffects(this.customData.reducedEffects, false);
+        const { controlStyle } = this.customData;
+        if (controlStyle === 'charge' || controlStyle === 'swipe') this.setControlStyle(controlStyle, false);
         const { musicVolume, sfxVolume } = this.customData;
         if (typeof musicVolume === 'number') this.audio.setBgmVolume(musicVolume);
         if (typeof sfxVolume === 'number') this.audio.setSfxVolume(sfxVolume);
@@ -320,6 +324,16 @@ export class GameManager {
     this.uiRoot.classList.toggle('reduce-fx', v);
     this.updateFxBtns();
     if (persist) this.saveCustom({ reducedEffects: v });
+  }
+
+  /** Hold-to-charge power, or power from swipe speed (mouse drag / touch swipe). */
+  setControlStyle(style: ControlStyle, persist = true): void {
+    this.controlStyle = style;
+    this.local.style = style;
+    this.local.reset();
+    this.touch.setStyle(style);
+    this.updateControlBtns();
+    if (persist) this.saveCustom({ controlStyle: style });
   }
 
   /** Sets the CPU opponent's skill (picked on the title screen). */
@@ -913,6 +927,12 @@ export class GameManager {
     }
   }
 
+  private updateControlBtns(): void {
+    for (const btn of this.uiRoot.querySelectorAll<HTMLElement>('[data-a="controls"]')) {
+      btn.textContent = this.controlStyle === 'swipe' ? 'CONTROLS: SWIPE' : 'CONTROLS: AIM & CHARGE';
+    }
+  }
+
   private syncVolumeSliders(): void {
     const set = (name: string, v: number) => {
       const input = this.overlays.title.querySelector<HTMLInputElement>(`input[name="${name}"]`);
@@ -955,19 +975,35 @@ export class GameManager {
   private renderHowTo(el: HTMLElement): void {
     const row = (keys: string, what: string) => `<div class="howto-row"><div class="howto-keys">${keys}</div><div>${what}</div></div>`;
     const kbd = (k: string) => `<span class="kbd">${k}</span>`;
+    const swipe = this.controlStyle === 'swipe';
     const controls = this.touch.active
-      ? [
+      ? swipe
+        ? [
+            row('Left thumb', 'Drag anywhere on the left half to move'),
+            row('Right side', 'Swipe to hit: sideways for the corners, up for deep, down for short'),
+            row('Speed', 'Swipe faster for more power (overhead = smash) · a tap is a safe shot'),
+            row('II', 'Pause (top right)'),
+          ]
+        : [
           row('Left thumb', 'Drag anywhere on the left half to move'),
           row('Right side', 'Tap to hit · hold, then lift, for a power shot (overhead = smash)'),
           row('Swipe', 'Aim: sideways for the corners, up for deep, down for short'),
-          row('II', 'Pause (top right)'),
-        ]
+            row('II', 'Pause (top right)'),
+          ]
       : [
           row(`${kbd('W A S D')} ${kbd('↑ ← ↓ →')}`, 'Move'),
           row(kbd('SHIFT'), 'Sprint'),
-          row(`${kbd('SPACE')} ${kbd('CLICK')}`, 'Tap to hit · hold and release for a power shot (overhead = smash)'),
-          row('Aim', `Hold a direction as you swing: ${kbd('A')}/${kbd('D')} corners, ${kbd('W')} deep, ${kbd('S')} short. Nothing held = safe deep shot`),
-          row('Mouse', 'Or click a spot on the far court to aim there'),
+          ...(swipe
+            ? [
+                row('Mouse', 'Hold the left button, flick and let go to hit: sideways for the corners, up for deep, down for short'),
+                row('Speed', 'Flick faster for more power (overhead = smash) · a click is a safe shot'),
+                row(kbd('SPACE'), 'Tap to hit · hold and release for a power shot'),
+              ]
+            : [
+                row(`${kbd('SPACE')} ${kbd('CLICK')}`, 'Tap to hit · hold and release for a power shot (overhead = smash)'),
+                row('Aim', `Hold a direction as you swing: ${kbd('A')}/${kbd('D')} corners, ${kbd('W')} deep, ${kbd('S')} short. Nothing held = safe deep shot`),
+                row('Mouse', 'Or click a spot on the far court to aim there'),
+              ]),
           row(`${kbd('ESC')} ${kbd('P')}`, 'Pause'),
           row(kbd('M'), 'Mute'),
         ];
@@ -1117,6 +1153,7 @@ export class GameManager {
           <label class="slider">SOUND FX <input type="range" name="sfx" min="0" max="100" step="5" /></label>
           <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
           <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
+          <button class="btn secondary" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
           <button class="btn secondary hidden" data-a="privacy">PRIVACY OPTIONS</button>
           <button class="art-btn btn-done" data-a="close">DONE</button>
         </div>
@@ -1141,6 +1178,7 @@ export class GameManager {
         this.menuPick(() => this.audio.setMuted(!this.audio.muted));
         this.updateMuteBtns();
       } else if (a === 'fx') this.menuPick(() => this.setReducedEffects(!this.reducedFx));
+      else if (a === 'controls') this.menuPick(() => this.setControlStyle(this.controlStyle === 'swipe' ? 'charge' : 'swipe'));
       else if (a === 'privacy') this.menuPick(() => void this.openPrivacyOptions());
     });
     title.addEventListener('input', (e) => {
@@ -1164,6 +1202,7 @@ export class GameManager {
       <button class="art-btn btn-restart" data-a="restart">RESTART</button>
       <button class="btn secondary" data-a="mute">MUTE AUDIO</button>
       <button class="btn secondary" data-a="fx">EFFECTS: FULL</button>
+      <button class="btn secondary" data-a="controls">CONTROLS: AIM &amp; CHARGE</button>
       <button class="art-btn btn-main-menu" data-a="menu">MAIN MENU</button></div>`;
     pause.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).dataset.a;
@@ -1178,6 +1217,10 @@ export class GameManager {
       }
       if (a === 'fx') {
         this.setReducedEffects(!this.reducedFx);
+        this.audio.play('click');
+      }
+      if (a === 'controls') {
+        this.setControlStyle(this.controlStyle === 'swipe' ? 'charge' : 'swipe');
         this.audio.play('click');
       }
       if (a === 'menu') this.goToMenu();
@@ -1264,7 +1307,9 @@ export class GameManager {
     let aim: AimMarker | null = null;
     const heroServing = r.phase === 'serve' && r.server === this.hero;
     const heroToHit = r.phase === 'live' && r.lastHitter !== this.hero;
-    if (intent && (heroServing || heroToHit) && this.fsm.state !== GameStateId.MAIN_MENU) {
+    // Swipe controls aim by the gesture alone: no reticle on the opponent's court.
+    const showAim = this.controlStyle !== 'swipe' || this.heroCtl.input !== this.local;
+    if (intent && showAim && (heroServing || heroToHit) && this.fsm.state !== GameStateId.MAIN_MENU) {
       // Once the swing is under way the locked direction-at-hit aim is shown; before that, a live
       // preview of where the held direction would send the ball (committed while charging).
       const sw = this.hero.swing;
