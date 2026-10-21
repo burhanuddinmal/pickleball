@@ -10,6 +10,12 @@ export interface PaddleLook {
 export const STARTER_PADDLE: PaddleLook = { face: '#ff6b35', edge: '#1d1f24', accent: '#ffd23f', grip: '#222222' };
 export const RIVAL_PADDLE: PaddleLook = { face: '#7a5cff', edge: '#15161a', accent: '#41e2ba', grip: '#1b1b1b' };
 
+const FACE_W = 0.205;
+const FACE_H = 0.27;
+const HANDLE = 0.13;
+/** Distance from the butt of the handle to the centre of the face (unscaled, along +Y). */
+export const PADDLE_FACE_CENTER = HANDLE + FACE_H / 2;
+
 function roundedRect(w: number, h: number, r: number): THREE.Shape {
   const s = new THREE.Shape();
   const x = -w / 2;
@@ -32,9 +38,9 @@ function roundedRect(w: number, h: number, r: number): THREE.Shape {
  */
 export function buildPaddle(look: PaddleLook): THREE.Group {
   const g = new THREE.Group();
-  const faceW = 0.205;
-  const faceH = 0.27;
-  const handle = 0.13;
+  const faceW = FACE_W;
+  const faceH = FACE_H;
+  const handle = HANDLE;
 
   const faceMat = new THREE.MeshStandardMaterial({ color: look.face, roughness: 0.45, metalness: 0.05 });
   const edgeMat = new THREE.MeshStandardMaterial({ color: look.edge, roughness: 0.5 });

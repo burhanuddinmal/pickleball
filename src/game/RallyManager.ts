@@ -1,7 +1,17 @@
 import { Vector3 } from 'three';
 import { BallPhysics } from '../physics/BallPhysics';
-import { buildServe, buildStroke } from '../gameplay/ShotSystem';
-import { judgeBounce, judgeRest, isInsideCourt, sideOfZ, type RallyOutcome } from '../gameplay/RuleManager';
+import { buildServe, buildStroke, contactQuality, strokeKind, type StrokeKind } from '../gameplay/ShotSystem';
+import {
+  judgeBounce,
+  judgeContact,
+  judgeMomentum,
+  judgeRest,
+  judgeServeLanding,
+  judgeServePosition,
+  isInsideCourt,
+  sideOfZ,
+  type RallyOutcome,
+} from '../gameplay/RuleManager';
 import type { Athlete, StrokeHand, SwingKind } from '../players/Athlete';
 import type { InputContext } from '../players/InputProvider';
 import { FREE_BOUNDS, type PlayerController } from '../players/PlayerController';
@@ -12,18 +22,31 @@ import { Rng, sideToWorld } from '../utils/MathUtils';
 export type RallyPhase = 'serve' | 'live' | 'dead';
 
 export interface RallyEvents extends Record<string, unknown> {
-  hit: { athlete: Athlete; pos: Vector3; speed: number; kind: SwingKind; hand: StrokeHand; shotIndex: number };
+  hit: {
+    athlete: Athlete;
+    pos: Vector3;
+    speed: number;
+    kind: SwingKind;
+    hand: StrokeHand;
+    shotIndex: number;
+    /** True for a charged power shot or smash (drives the power hit effects). */
+    power: boolean;
+    stroke: StrokeKind;
+  };
   bounce: { pos: Vector3; speed: number; inBounds: boolean };
   net: { pos: Vector3; tape: boolean };
   rallyEnd: { outcome: RallyOutcome; shots: number };
   serveStart: { server: Athlete; fromRight: boolean };
   swing: { athlete: Athlete };
+  /** A swing finished; `contact` is false for a whiff. */
+  swingEnd: { athlete: Athlete; kind: SwingKind; contact: boolean };
 }
 
 /** Hard safety limit: a rally (or a held serve by the AI) can never run forever. */
 const MAX_RALLY_TIME = 60;
 const SERVE_DEPTH = COURT.HALF_LENGTH + 0.45;
-const SERVE_LATERAL = 1.25;
+/** Server bounds keep the feet clear of the baseline, centerline and sideline. */
+const SERVE_MARGIN = PLAYER.FOOT_RADIUS + 0.02;
 
 /**
  * Runs a single rally: serve, live ball, paddle contacts and rally-ending judgement.
@@ -42,6 +65,8 @@ export class RallyManager {
   outcome: RallyOutcome | null = null;
   time = 0;
   private ctx = new Map<PlayerController, InputContext>();
+  /** Rally time of each player's last volley, for the kitchen momentum rule. */
+  private lastVolleyAt = new Map<Athlete, number>();
   private readonly hand = new Vector3();
 
   constructor(
@@ -69,27 +94,28 @@ export class RallyManager {
     this.shotIndex = 0;
     this.rallyTime = 0;
     this.outcome = null;
+    this.lastVolleyAt.clear();
 
-    const lateral = fromRight ? SERVE_LATERAL : -SERVE_LATERAL;
+    const lateral = fromRight ? PLAYER.SERVE_LATERAL : -PLAYER.SERVE_LATERAL;
     for (const c of this.players) {
       const a = c.athlete;
       c.reset();
       const isServer = a === server;
       // Receiver stands in the diagonal court, which is also on *their* right when the server is on the right.
-      const p = sideToWorld(a.side, lateral, isServer ? SERVE_DEPTH : COURT.HALF_LENGTH - 0.15);
+      const p = sideToWorld(a.side, lateral, isServer ? SERVE_DEPTH : PLAYER.RECEIVE_DEPTH);
       a.pos.set(p.x, 0, p.z);
       a.facing = a.netYaw;
       a.holdingBall = isServer;
       c.bounds = isServer
         ? {
-            minLateral: fromRight ? 0.1 : -COURT.HALF_WIDTH + 0.1,
-            maxLateral: fromRight ? COURT.HALF_WIDTH - 0.1 : -0.1,
-            minDepth: COURT.HALF_LENGTH + 0.08,
+            minLateral: fromRight ? SERVE_MARGIN : -COURT.HALF_WIDTH + SERVE_MARGIN,
+            maxLateral: fromRight ? COURT.HALF_WIDTH - SERVE_MARGIN : -SERVE_MARGIN,
+            minDepth: COURT.HALF_LENGTH + SERVE_MARGIN,
             maxDepth: COURT.HALF_LENGTH + PLAYER.BACK_ROOM,
           }
         : FREE_BOUNDS;
     }
-    this.ball.hold(this.handPosition(server, 0.95));
+    this.ball.hold(this.handPosition(server, PLAYER.SERVE_HOLD_HEIGHT));
     this.bus.emit('serveStart', { server, fromRight });
   }
 
@@ -99,7 +125,10 @@ export class RallyManager {
 
     for (const c of this.players) {
       const ctx = this.updateCtx(c);
+      const sw = c.athlete.swing;
+      const wasSwinging = sw.active;
       if (c.tick(ctx, dt)) this.bus.emit('swing', { athlete: c.athlete });
+      else if (wasSwinging && !sw.active) this.bus.emit('swingEnd', { athlete: c.athlete, kind: sw.kind, contact: sw.contact });
     }
 
     if (this.phase === 'serve') {
@@ -113,7 +142,10 @@ export class RallyManager {
         this.bouncesSinceHit++;
         this.bus.emit('bounce', { pos: e.pos, speed: e.speed, inBounds: isInsideCourt(e.pos.x, e.pos.z) });
         if (this.phase === 'live' && this.lastHitter) {
-          const o = judgeBounce(this.lastHitter.side, this.bouncesSinceHit, e.pos);
+          const serveBounce = this.shotIndex === 1 && this.bouncesSinceHit === 1;
+          const o = serveBounce
+            ? judgeServeLanding(this.lastHitter.side, this.serveFromRight, e.pos)
+            : judgeBounce(this.lastHitter.side, this.bouncesSinceHit, e.pos);
           if (o) this.end(o);
         }
       } else if (e.type === 'net') {
@@ -123,10 +155,9 @@ export class RallyManager {
       }
     }
 
-    if (this.phase === 'live') {
-      this.checkContacts();
-      this.checkSafety();
-    }
+    if (this.phase === 'live') this.checkContacts();
+    if (this.phase === 'live') this.checkMomentum();
+    if (this.phase === 'live') this.checkSafety();
   }
 
   private updateServe(): void {
@@ -135,21 +166,23 @@ export class RallyManager {
     if (sw.active && sw.kind === 'serve') {
       // Drop the ball from the hand toward the contact height during the backswing.
       const k = Math.min(1, sw.t / PLAYER.SERVE_CONTACT_DELAY);
-      this.ball.hold(this.handPosition(s, 0.95 + (PLAYER.SERVE_CONTACT_HEIGHT - 0.95) * k));
+      this.ball.hold(this.handPosition(s, PLAYER.SERVE_HOLD_HEIGHT + (PLAYER.SERVE_CONTACT_HEIGHT - PLAYER.SERVE_HOLD_HEIGHT) * k));
       if (sw.t >= PLAYER.SERVE_CONTACT_DELAY && !sw.contact) {
-        const intent = this.controllerFor(s).intent;
+        const aim = this.controllerFor(s).swingAim;
         const contact = this.ball.state.pos.clone();
-        const sol = buildServe(contact, s.side, this.serveFromRight, intent?.aimX ?? 0, intent?.aimDepth ?? 0.75);
+        const sol = buildServe(contact, s.side, this.serveFromRight, aim.aimX, aim.aimDepth);
         sw.contact = true;
         sw.contactHeight = contact.y;
         s.holdingBall = false;
         this.controllerFor(s).bounds = FREE_BOUNDS;
         this.ball.launch(contact, sol.velocity, sol.spin);
         this.phase = 'live';
-        this.registerHit(s, 'serve', 'forehand');
+        this.registerHit(s, 'serve', 'forehand', 'normal');
+        const foot = judgeServePosition(s.side, this.serveFromRight, s.pos);
+        if (foot) this.end(foot);
       }
     } else {
-      this.ball.hold(this.handPosition(s, 0.95));
+      this.ball.hold(this.handPosition(s, PLAYER.SERVE_HOLD_HEIGHT));
       if (this.rallyTime > MAX_RALLY_TIME) this.rallyTime = 0;
     }
   }
@@ -161,21 +194,42 @@ export class RallyManager {
       if (!a.inContactWindow || this.lastHitter === a) continue;
       if (b.z * a.side < -0.15) continue; // can't reach over the net
       if (b.y < PLAYER.REACH_MIN_H || b.y > PLAYER.REACH_MAX_H) continue;
-      if (Math.hypot(b.x - a.pos.x, b.z - a.pos.z) > PLAYER.REACH) continue;
 
-      const intent = c.intent;
+      const reach = Math.hypot(b.x - a.pos.x, b.z - a.pos.z);
+      if (reach > PLAYER.REACH) continue;
+
+      const verdict = judgeContact({ hitterSide: a.side, shotIndex: this.shotIndex, bouncesSinceHit: this.bouncesSinceHit, hitterPos: a.pos });
+      const volley = this.bouncesSinceHit === 0;
+      const aim = c.swingAim;
       const contact = b.clone();
-      const sol = buildStroke(contact, a.side, intent?.aimX ?? 0, intent?.aimDepth ?? 0.75, this.rng);
+      const quality = contactQuality(a.swing.t, reach / PLAYER.REACH);
+      const sol = buildStroke(contact, a.side, aim.aimX, aim.aimDepth, this.rng, { quality, power: aim.power });
       a.swing.contact = true;
       a.swing.contactHeight = contact.y;
       a.swing.hand = a.handFor(contact.x);
       this.ball.launch(contact, sol.velocity, sol.spin);
-      this.registerHit(a, 'stroke', a.swing.hand);
+      this.registerHit(a, 'stroke', a.swing.hand, strokeKind(contact.y, aim.power));
+      if (volley) this.lastVolleyAt.set(a, this.rallyTime);
+      if (verdict) this.end(verdict);
       return;
     }
   }
 
-  private registerHit(a: Athlete, kind: SwingKind, hand: StrokeHand): void {
+  /** Kitchen momentum: a volleyer carried into the kitchen during the follow-through faults. */
+  private checkMomentum(): void {
+    for (const c of this.players) {
+      const a = c.athlete;
+      const at = this.lastVolleyAt.get(a);
+      if (at === undefined) continue;
+      const o = judgeMomentum(a.side, a.pos, this.rallyTime - at);
+      if (o) {
+        this.end(o);
+        return;
+      }
+    }
+  }
+
+  private registerHit(a: Athlete, kind: SwingKind, hand: StrokeHand, stroke: StrokeKind): void {
     this.lastHitter = a;
     this.bouncesSinceHit = 0;
     this.shotIndex++;
@@ -186,6 +240,8 @@ export class RallyManager {
       kind,
       hand,
       shotIndex: this.shotIndex,
+      power: stroke !== 'normal',
+      stroke,
     });
   }
 
@@ -213,7 +269,7 @@ export class RallyManager {
 
   private handPosition(a: Athlete, height: number): Vector3 {
     // In front of the body, on the paddle (right-hand) side.
-    return this.hand.set(a.pos.x + a.side * 0.38, height, a.pos.z - a.side * 0.32);
+    return this.hand.set(a.pos.x + a.side * 0.32, height, a.pos.z - a.side * 0.28);
   }
 
   private createCtx(c: PlayerController): InputContext {

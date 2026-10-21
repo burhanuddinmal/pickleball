@@ -1,0 +1,3 @@
+athlete.glb — "Casual_Male" from the Ultimate Animated Character Pack by Quaternius
+https://quaternius.com/packs/ultimatedanimatedcharacter.html
+License: CC0 1.0 (as stated on the pack page). Trimmed to the Idle and Run animations.

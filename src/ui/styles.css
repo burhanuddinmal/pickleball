@@ -8,7 +8,9 @@
   --radius: 16px;
   --font: 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Menus only: AdManager sets the ad banner's height here, so everything bottom-anchored clears it. */
+  --ad-banner-h: 0px;
+  --safe-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--ad-banner-h));
 }
 
 * {
@@ -59,6 +61,7 @@ body {
   gap: 18px;
   pointer-events: auto;
   z-index: 20;
+  padding-bottom: var(--safe-bottom);
 }
 
 .hidden {
@@ -68,6 +71,10 @@ body {
 /* ---------- Loading / title ---------- */
 .loading {
   background: radial-gradient(circle at 50% 35%, #1f4f8f 0%, #0f1b2d 70%);
+}
+
+#loading.loading {
+  visibility: visible;
 }
 
 .logo {
@@ -106,27 +113,34 @@ body {
 }
 
 .title {
-  background: linear-gradient(180deg, rgba(15, 27, 45, 0.25), rgba(15, 27, 45, 0.85));
-  cursor: pointer;
+  /* Clear in the middle so the demo rally shows; darker top and bottom behind the text. */
+  background: linear-gradient(180deg, rgba(15, 27, 45, 0.7) 0%, rgba(15, 27, 45, 0.1) 32%, rgba(15, 27, 45, 0.1) 52%, rgba(15, 27, 45, 0.88) 100%);
+  justify-content: space-between;
+  padding: calc(20px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  overflow: hidden;
+  touch-action: none;
+}
+
+.menu-top,
+.menu-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
 }
 
 .title .tap {
-  font-size: 20px;
-  font-weight: 700;
-  padding: 14px 28px;
+  font-size: 28px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  padding: 16px 0;
+  width: min(300px, 80vw);
   border-radius: 999px;
   background: var(--accent);
   color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   animation: pulse 1.4s ease-in-out infinite;
-}
-
-.title .controls-help {
-  max-width: 520px;
-  text-align: center;
-  font-size: 14px;
-  line-height: 1.6;
-  opacity: 0.85;
-  padding: 0 16px;
 }
 
 .kbd {
@@ -146,11 +160,18 @@ body {
 }
 
 /* ---------- HUD ---------- */
-.hud-top {
+.hud-corner {
   position: absolute;
   top: calc(10px + var(--safe-top));
-  left: 50%;
-  transform: translateX(-50%);
+  /* Top-left corner: top-centre covered the rival on the far baseline. */
+  left: calc(12px + env(safe-area-inset-left, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.hud-top {
   display: flex;
   align-items: stretch;
   border-radius: var(--radius);
@@ -164,8 +185,8 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 6px 16px;
-  min-width: 86px;
+  padding: 4px 12px;
+  min-width: 64px;
 }
 
 .hud-score .label {
@@ -176,7 +197,7 @@ body {
 }
 
 .hud-score .value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 900;
   line-height: 1.05;
 }
@@ -217,6 +238,103 @@ body {
   font-weight: 900;
 }
 
+/* Value pop when a score or the rally count changes (restarted from HUD.bump()). */
+.hud-score .value.bump {
+  animation: bump 0.5s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+
+.hud-mid .rally.bump {
+  animation: bump 0.3s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+
+@keyframes bump {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.45);
+    color: var(--accent);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* GAME POINT badge under the scoreboard, in the colour of the player holding it. */
+.gp-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  background: var(--accent);
+  color: var(--ink);
+  transform-origin: left center;
+  animation: gp-pulse 1.1s ease-in-out infinite;
+}
+
+.gp-badge.hero {
+  background: var(--hero);
+  color: var(--white);
+}
+
+.gp-badge.rival {
+  background: var(--rival);
+  color: var(--ink);
+}
+
+@keyframes gp-pulse {
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 14px 2px rgba(255, 255, 255, 0.45);
+  }
+}
+
+/* Full-screen edge tint on point end (restarted from HUD.edgeGlow()). */
+.edge-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  --glow: 255, 255, 255;
+  box-shadow: inset 0 0 14vmin 2vmin rgba(var(--glow), 0.5);
+}
+
+.edge-glow.good {
+  --glow: 90, 255, 150;
+}
+
+.edge-glow.bad {
+  --glow: 255, 70, 60;
+}
+
+.edge-glow.flash {
+  animation: edge-glow 0.6s ease-out;
+}
+
+@keyframes edge-glow {
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* "Reduce effects" setting (toggled on #ui-root by GameManager). */
+.reduce-fx .bump,
+.reduce-fx .gp-badge,
+.reduce-fx .banner.show,
+.reduce-fx .banner.hide,
+.reduce-fx .banner.slam.show .big,
+.reduce-fx .banner.slam.show .small {
+  animation: none;
+}
+
+.reduce-fx .edge-glow {
+  display: none;
+}
+
 .banner {
   position: absolute;
   top: 30%;
@@ -224,6 +342,9 @@ body {
   transform: translate(-50%, -50%);
   text-align: center;
   pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.25s, visibility 0s 0.25s;
 }
 
 .banner .big {
@@ -242,7 +363,11 @@ body {
 }
 
 .banner.show {
-  animation: pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  opacity: 1;
+  visibility: visible;
+  transition: none;
+  /* `backwards`, not `both`: a held end keyframe would pin opacity at 1 and the banner could never fade. */
+  animation: pop 0.35s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
 }
 
 .banner.good .big {
@@ -261,6 +386,59 @@ body {
   to {
     transform: translate(-50%, -50%) scale(1);
     opacity: 1;
+  }
+}
+
+/* Exit: grow and fade out (held at the end; the next show resets the class list). */
+.banner.hide {
+  visibility: visible;
+  animation: banner-out 0.3s ease-in forwards;
+}
+
+@keyframes banner-out {
+  from {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1.35);
+    opacity: 0;
+  }
+}
+
+/* WINNER! slams in from big and skewed with a hard overshoot. */
+.banner.slam.show {
+  animation: none;
+}
+
+.banner.slam.show .big {
+  animation: slam 0.5s ease-out backwards;
+}
+
+.banner.slam.show .small {
+  animation: fade-in 0.25s 0.25s ease-out backwards;
+}
+
+@keyframes slam {
+  0% {
+    transform: scale(2.8) skewX(-20deg);
+    opacity: 0;
+  }
+  45% {
+    transform: scale(0.88) skewX(8deg);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(1.06) skewX(-3deg);
+  }
+  100% {
+    transform: scale(1) skewX(0deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
   }
 }
 
@@ -293,12 +471,13 @@ body {
   font-size: 18px;
   font-weight: 900;
   pointer-events: auto;
+  z-index: 10; /* above the full-screen touch layer (z-index 5) */
   cursor: pointer;
 }
 
 .debug {
   position: absolute;
-  top: calc(70px + var(--safe-top));
+  top: calc(112px + var(--safe-top));
   left: 10px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -334,6 +513,18 @@ body {
 .btn.secondary {
   background: rgba(255, 255, 255, 0.14);
   color: var(--white);
+}
+
+/* Rewarded "second chance" on the match-over screen (opt-in ad). */
+.btn.second-chance {
+  background: linear-gradient(180deg, #4fe0b8, var(--rival));
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .dim {
@@ -396,63 +587,302 @@ body {
   pointer-events: none;
 }
 
-/* ---------- Game length picker / match over ---------- */
+/* ---------- Title menu: stats, pickers, dialogs ---------- */
 .title .tap {
   border: none;
   font-family: var(--font);
   cursor: pointer;
 }
 
-.match-len {
+.menu-stats {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+}
+
+.stat {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  min-width: 72px;
+  padding: 2px 8px;
 }
 
-.match-len-label {
-  font-size: 13px;
+.stat-value {
+  font-size: 22px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.stat-label small {
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.menu-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 24px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  backdrop-filter: blur(6px);
+  max-width: 100%;
+}
+
+.pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pick-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
   opacity: 0.9;
 }
 
-.match-len-label small {
+.pick-label small {
   font-weight: 600;
   opacity: 0.75;
   letter-spacing: 0;
 }
 
-.match-len-opts {
+.seg {
+  display: flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.seg-opt {
+  min-width: 48px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--white);
+  font: 800 13px var(--font);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.seg-opt.selected {
+  background: var(--accent);
+  color: var(--ink);
+}
+
+.menu-links {
   display: flex;
   gap: 10px;
 }
 
-.match-len .opt {
+.btn.small {
+  min-width: 0;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.kbd-hint {
+  font-size: 12px;
+  opacity: 0.7;
+  text-align: center;
+}
+
+.kbd + .kbd {
+  margin-left: 3px;
+}
+
+/* No keyboard hints on touch-first devices. */
+@media (pointer: coarse) {
+  .kbd-hint {
+    display: none;
+  }
+}
+
+.menu-modal {
+  position: fixed;
+  inset: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  width: 84px;
-  padding: 10px 0 8px;
-  border-radius: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  background: rgba(12, 22, 38, 0.6);
-  color: var(--white);
-  font: 900 28px var(--font);
+  justify-content: center;
+  padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  overflow: hidden;
+  touch-action: none;
+  z-index: 1;
+}
+
+.menu-modal .panel {
+  max-width: 460px;
+  max-height: 100%;
+  min-height: 0;
+  margin: auto;
+}
+
+.panel-title {
+  font-size: 32px;
+  margin-bottom: 4px;
+}
+
+.howto-body {
+  width: 100%;
+  /* Only the rules text may scroll, and only when a dialog cannot fit it; the page never does. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  touch-action: pan-y;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.howto-head {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+.howto-row {
+  display: grid;
+  grid-template-columns: 9.5em 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.howto-keys {
+  font-weight: 700;
+}
+
+.howto-rules {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.howto-rules li + li {
+  margin-top: 4px;
+}
+
+.slider {
+  display: grid;
+  grid-template-columns: 6.5em 1fr;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.slider input {
+  width: 100%;
+  accent-color: var(--accent);
+  touch-action: pan-x;
   cursor: pointer;
 }
 
-.match-len .opt small {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  opacity: 0.8;
+/* Keyboard focus. */
+.title button:focus-visible,
+.overlay .btn:focus-visible,
+.slider input:focus-visible {
+  outline: 3px solid var(--white);
+  outline-offset: 3px;
 }
 
-.match-len .opt.selected {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--ink);
+/* Short screens (phones in landscape): shrink the logo and spacing so everything fits. */
+@media (max-height: 520px) {
+  .title {
+    padding-top: calc(10px + var(--safe-top));
+    padding-bottom: calc(10px + var(--safe-bottom));
+  }
+
+  .menu-top .logo-img {
+    width: min(240px, 46vw);
+  }
+
+  .stat-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .seg-opt[data-difficulty]::before,
+  .howto-art {
+    display: none;
+  }
+
+  .menu-top,
+  .menu-bottom {
+    gap: 8px;
+  }
+
+  .stat-value {
+    font-size: 17px;
+  }
+
+  .menu-card {
+    padding: 8px 12px;
+  }
+
+  .title .tap {
+    font-size: 22px;
+    padding: 10px 0;
+  }
+
+  .kbd-hint {
+    display: none;
+  }
+
+  .menu-modal .panel {
+    padding: 16px 20px;
+    gap: 8px;
+  }
+
+  .panel-title {
+    font-size: 24px;
+  }
+
+  .howto-body {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .howto-head {
+    margin: 4px 0 2px;
+  }
+}
+
+/* Narrow phones: a smaller stats strip. */
+@media (max-width: 420px) {
+  .stat {
+    min-width: 0;
+    padding: 2px 5px;
+  }
+
+  .stat-value {
+    font-size: 18px;
+  }
+
+  .stat-label {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+  }
 }
 
 .hud-mid .target {
@@ -473,4 +903,874 @@ body {
   font-size: 14px;
   opacity: 0.8;
   margin-bottom: 6px;
+}
+
+/* ---------- Rally milestones ---------- */
+/* Callout under the scoreboard, clear of the court (restarted from HUD.callout()). */
+.callout {
+  margin-left: 4px;
+  font-size: clamp(20px, 4.5vw, 30px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--accent);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 18px rgba(255, 150, 40, 0.55);
+  transform-origin: left center;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.callout.l2 {
+  color: #ffb03a;
+}
+
+.callout.l3 {
+  color: #ff6a3d;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 22px rgba(255, 80, 30, 0.75);
+}
+
+.callout.show {
+  animation: callout 1.4s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+
+@keyframes callout {
+  0% {
+    opacity: 0;
+    transform: scale(0.4) rotate(-9deg);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.18) rotate(-3deg);
+  }
+  28% {
+    transform: scale(1) rotate(-3deg);
+  }
+  78% {
+    opacity: 1;
+    transform: translateX(4px) scale(1) rotate(-3deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(14px) scale(0.95) rotate(-3deg);
+  }
+}
+
+@keyframes callout-fade {
+  10%,
+  78% {
+    opacity: 1;
+  }
+}
+
+/* Rally counter heats up at 5 / 10 / 15 shots (HUD.setRallyHeat()). */
+.hud-mid .rally.hot {
+  color: #ffc23a;
+  text-shadow: 0 0 8px rgba(255, 160, 40, 0.9);
+}
+
+.hud-mid .rally.hot[data-heat='2'] {
+  color: #ff8a3a;
+  text-shadow: 0 0 8px rgba(255, 120, 40, 1), 0 0 16px rgba(255, 90, 30, 0.6);
+}
+
+.hud-mid .rally.hot[data-heat='3'] {
+  color: #ff5a32;
+  text-shadow: 0 0 8px rgba(255, 90, 40, 1), 0 0 18px rgba(255, 60, 30, 0.8), 0 0 28px rgba(255, 200, 60, 0.45);
+}
+
+/* "+1" that flies from the landing spot into the winner's score (HUD.flyPoint(), WAAPI). */
+.plus-one {
+  position: fixed;
+  left: 0;
+  top: 0;
+  font-size: 36px;
+  font-weight: 900;
+  font-style: italic;
+  color: var(--accent);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 0 14px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  will-change: transform, opacity;
+  z-index: 2;
+}
+
+.plus-one.rival {
+  color: var(--rival);
+}
+
+/* ---------- Match over ---------- */
+/* Light, bottom-weighted dim so the winner's orbit and confetti stay visible behind the panel. */
+.overlay.dim.match-over {
+  justify-content: flex-end;
+  padding-bottom: calc(24px + var(--safe-bottom));
+  background: linear-gradient(180deg, rgba(8, 14, 24, 0) 0%, rgba(8, 14, 24, 0.1) 45%, rgba(8, 14, 24, 0.6) 100%);
+  backdrop-filter: none;
+}
+
+.final {
+  font-variant-numeric: tabular-nums;
+}
+
+.best-rally {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  background: var(--accent);
+  color: var(--ink);
+  animation: gp-pulse 1.1s ease-in-out infinite;
+}
+
+/* ---------- Menu feel ---------- */
+.btn,
+.seg-opt,
+.title .tap {
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+@media (hover: hover) {
+  .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  }
+
+  .title .tap:hover {
+    filter: brightness(1.08);
+  }
+
+  .seg-opt:not(.selected):hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+}
+
+.btn:active,
+.seg-opt:active {
+  transform: translateY(1px) scale(0.96);
+  box-shadow: none;
+  transition-duration: 0.05s;
+}
+
+.title .tap:active {
+  animation: none;
+  transform: scale(0.93);
+}
+
+.menu-top .logo-img {
+  animation: logo-bob 3.2s ease-in-out infinite;
+}
+
+@keyframes logo-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(1deg);
+  }
+}
+
+/* Tier 3 motion under "reduce effects" and the OS reduced-motion setting. */
+.reduce-fx .menu-top .logo-img,
+.reduce-fx .title .tap,
+.reduce-fx .best-rally {
+  animation: none;
+}
+
+.reduce-fx .callout.show {
+  animation: callout-fade 1.4s linear both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-top .logo-img,
+  .title .tap,
+  .best-rally {
+    animation: none;
+  }
+
+  .callout.show {
+    animation: callout-fade 1.4s linear both;
+  }
+}
+
+/* ---------- Menu art ----------
+   Pieces cut from public/assets/images by scripts/extract-menu-assets.py into public/assets/ui. */
+.logo-img {
+  display: block;
+  width: min(480px, 84vw);
+  height: auto;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.45));
+}
+
+.loading {
+  background:
+    linear-gradient(180deg, rgba(15, 27, 45, 0.45) 0%, rgba(15, 27, 45, 0.85) 100%),
+    url('/assets/ui/court-bg.jpg') center / cover,
+    var(--ink);
+}
+
+.progress {
+  height: 14px;
+  border: 2px solid #e4f53a;
+  background: rgba(15, 27, 45, 0.75);
+  box-shadow: 0 0 14px rgba(228, 245, 58, 0.45);
+}
+
+.progress .bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a8e82a, #e4f53a);
+  box-shadow: 0 0 10px #e4f53a;
+}
+
+/* Buttons whose label is baked into the art. The text stays in the DOM for screen readers. */
+.art-btn {
+  border: none;
+  padding: 0;
+  font-size: 0;
+  color: transparent;
+  background: transparent center / contain no-repeat;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .art-btn:hover {
+    filter: brightness(1.12);
+  }
+}
+
+.art-btn:active {
+  transform: scale(0.95);
+}
+
+.title .tap.art-btn {
+  width: min(300px, 80vw);
+  aspect-ratio: 465 / 205;
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 0;
+  /* Second layer preloads the pressed state. */
+  background-color: transparent;
+  background-image: url('/assets/ui/btn-play.png'), url('/assets/ui/btn-play-pressed.png');
+  background-size: contain, 0 0;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.4));
+}
+
+.title .tap.art-btn:active {
+  background-image: url('/assets/ui/btn-play-pressed.png');
+  background-size: contain;
+}
+
+.btn-howto,
+.btn-settings {
+  width: min(180px, 42vw);
+  aspect-ratio: 465 / 140;
+}
+
+.btn-howto {
+  background-image: url('/assets/ui/btn-howto.png');
+}
+
+.btn-settings {
+  background-image: url('/assets/ui/btn-settings.png');
+}
+
+.btn-got-it,
+.btn-done {
+  width: min(220px, 60vw);
+  aspect-ratio: 465 / 135;
+  margin-top: 4px;
+}
+
+.btn-got-it {
+  background-image: url('/assets/ui/btn-got-it.png');
+}
+
+.btn-done {
+  background-image: url('/assets/ui/btn-done.png');
+}
+
+/* Match setup card: carbon glass with a cyan rim; picks glow gold when selected. */
+.menu-card {
+  background:
+    linear-gradient(rgba(10, 20, 34, 0.55), rgba(10, 20, 34, 0.55)),
+    url('/assets/ui/card-texture.jpg') center / cover;
+  border: 1px solid rgba(90, 220, 255, 0.45);
+  box-shadow: 0 0 18px rgba(64, 200, 255, 0.22), inset 0 0 14px rgba(64, 200, 255, 0.1);
+}
+
+.seg {
+  background: rgba(5, 12, 22, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(120, 200, 230, 0.3);
+}
+
+.seg-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.seg-opt.selected {
+  background: linear-gradient(180deg, #ffe680 0%, #f7bd12 100%);
+  color: var(--ink);
+  box-shadow: 0 0 12px rgba(255, 210, 63, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.seg-opt[data-difficulty]::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  background: center / contain no-repeat;
+}
+
+.seg-opt[data-difficulty='easy']::before {
+  background-image: url('/assets/ui/icon-easy.png');
+}
+
+.seg-opt[data-difficulty='medium']::before {
+  background-image: url('/assets/ui/icon-medium.png');
+}
+
+.seg-opt[data-difficulty='hard']::before {
+  background-image: url('/assets/ui/icon-hard.png');
+}
+
+/* The art has three faces; the flame stands in for expert. */
+.seg-opt[data-difficulty='expert']::before {
+  background-image: url('/assets/ui/icon-streak.png');
+}
+
+.stat-icon {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  margin-bottom: 2px;
+}
+
+/* Sound, effects, and controls toggles are now .art-btn image buttons styled below. */
+
+/* Dialogs: glass panel with a cyan rim, like the settings art. */
+.menu-modal .panel {
+  background: linear-gradient(180deg, rgba(16, 34, 54, 0.95), rgba(10, 22, 38, 0.95));
+  border: 1.5px solid rgba(90, 220, 255, 0.6);
+  box-shadow: 0 0 26px rgba(64, 200, 255, 0.3), inset 0 0 18px rgba(64, 200, 255, 0.08);
+}
+
+.howto-art {
+  display: block;
+  max-width: 100%;
+  max-height: min(36vh, 300px);
+  border-radius: 12px;
+}
+
+/* Volume sliders: glowing fill (--fill is set from script) and the brushed-metal knob. */
+.slider input {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 30px;
+  background: transparent;
+}
+
+.slider input[name='music'] {
+  --c: #3ee0ff;
+}
+
+.slider input[name='sfx'] {
+  --c: #d8f53a;
+}
+
+.slider input::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--c) var(--fill, 50%), rgba(5, 12, 22, 0.85) var(--fill, 50%));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 8px color-mix(in srgb, var(--c) 40%, transparent);
+}
+
+.slider input::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(5, 12, 22, 0.85);
+}
+
+.slider input::-moz-range-progress {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--c);
+}
+
+.slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 30px;
+  height: 30px;
+  margin-top: -10px;
+  border: none;
+  border-radius: 50%;
+  background: url('/assets/ui/slider-knob.png') center / contain;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.slider input::-moz-range-thumb {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: url('/assets/ui/slider-knob.png') center / contain;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* Keyboard hints styled like the arcade keycaps. */
+.kbd {
+  background: #1a2b45;
+  border: 1px solid rgba(150, 220, 255, 0.55);
+  box-shadow: 0 2px 0 #0a1424, 0 0 6px rgba(120, 210, 255, 0.3);
+}
+
+/* ---------- HUD art ----------
+   Pieces cut from hud_gameplay_buttons.jpg by scripts/extract-menu-assets.py. */
+.pause-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 0;
+  font-size: 0;
+  color: transparent;
+  background: url('/assets/ui/hud-pause.png') center / contain no-repeat;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.4));
+}
+
+.pause-btn:active,
+.pause-btn:focus-visible {
+  background-image: url('/assets/ui/hud-pause-pressed.png');
+}
+
+@media (hover: hover) {
+  .pause-btn:hover {
+    background-image: url('/assets/ui/hud-pause-pressed.png');
+  }
+}
+
+/* Scoreboard: dark glass bar with a gold rim, like the HUD art; team colours stay on the scores. */
+.hud-top {
+  background: linear-gradient(180deg, rgba(30, 48, 70, 0.88), rgba(12, 22, 38, 0.88));
+  border: 1px solid rgba(230, 190, 90, 0.55);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.hud-mid {
+  gap: 1px;
+}
+
+.vs-badge {
+  width: 26px;
+  height: 26px;
+  margin-bottom: 1px;
+}
+
+/* GAME POINT: the medallion in front of the holder-coloured pill. */
+.gp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 4px;
+}
+
+.gp-badge::before {
+  content: '';
+  width: 30px;
+  height: 28px;
+  margin: -6px 0 -6px -10px;
+  background: url('/assets/ui/hud-game-point.png') center / contain no-repeat;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
+
+/* Pause and match-over overlay buttons (labels baked into the art). */
+.btn-resume,
+.btn-play-again {
+  width: min(260px, 72vw);
+  aspect-ratio: 397 / 110;
+}
+
+.btn-resume {
+  background-image: url('/assets/ui/btn-resume.png');
+}
+
+.btn-play-again {
+  background-image: url('/assets/ui/btn-play-again.png');
+}
+
+.btn-restart,
+.btn-main-menu {
+  width: min(220px, 62vw);
+  aspect-ratio: 263 / 90;
+}
+
+.btn-restart {
+  background-image: url('/assets/ui/btn-restart.png');
+}
+
+.btn-main-menu {
+  background-image: url('/assets/ui/btn-main-menu.png');
+}
+
+.btn-mute,
+.btn-fx,
+.btn-controls {
+  width: min(220px, 62vw);
+  aspect-ratio: 520 / 111;
+}
+
+.btn-mute {
+  background-image: url('/assets/ui/btn-mute-audio.png'), url('/assets/ui/btn-unmute-audio.png');
+  background-size: contain, 0 0;
+}
+
+.btn-mute.is-off {
+  background-image: url('/assets/ui/btn-unmute-audio.png');
+  background-size: contain;
+}
+
+.btn-fx {
+  background-image: url('/assets/ui/btn-fx-full.png'), url('/assets/ui/btn-fx-reduced.png');
+  background-size: contain, 0 0;
+}
+
+.btn-fx.is-off {
+  background-image: url('/assets/ui/btn-fx-reduced.png');
+  background-size: contain;
+}
+
+.btn-controls {
+  background-image: url('/assets/ui/btn-controls-charge.png'), url('/assets/ui/btn-controls-swipe.png');
+  background-size: contain, 0 0;
+}
+
+.btn-controls.is-swipe {
+  background-image: url('/assets/ui/btn-controls-swipe.png');
+  background-size: contain;
+}
+
+.overlay .art-btn {
+  pointer-events: auto;
+}
+
+/* Short screens: keep the scoreboard compact. */
+@media (max-height: 520px) {
+  .vs-badge {
+    display: none;
+  }
+
+  .pause-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* Power-shot charge meter, positioned above the player by HUD.setCharge(). */
+.charge-meter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 64px;
+  height: 9px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(5, 12, 22, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+
+.charge-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.charge-meter.ready .charge-fill {
+  background: #ffb03a;
+}
+
+.charge-meter.full .charge-fill {
+  background: #ff6a3d;
+  box-shadow: 0 0 10px rgba(255, 90, 40, 0.9);
+}
+
+/* Swipe-style swing trail (HUD layer, drawn by SwipeTrail). */
+.swipe-trail {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* ---------- Phones in landscape ----------
+   ~380px tall minus the ad banner. Everything is sized from the height so nothing overflows,
+   and the stacked menus become rows or two columns. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .overlay,
+  .menu-modal {
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  }
+
+  /* Title: logo on top, setup card, then PLAY flanked by the secondary buttons in one row. */
+  .title {
+    justify-content: space-evenly;
+    gap: 6px;
+    padding-top: calc(6px + var(--safe-top));
+    padding-bottom: calc(6px + var(--safe-bottom));
+  }
+
+  .menu-top {
+    flex: 0 1 auto;
+    min-height: 0;
+  }
+
+  .menu-top .logo-img {
+    width: auto;
+    height: clamp(56px, 22vh, 150px);
+  }
+
+  .menu-stats {
+    display: none;
+  }
+
+  /* Card on its own row; HOW TO PLAY, PLAY, SETTINGS on the next. */
+  .menu-bottom {
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    justify-content: center;
+    justify-items: center;
+    align-items: center;
+    gap: 6px 14px;
+  }
+
+  .menu-card {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+    gap: 16px;
+    padding: 6px 12px;
+  }
+
+  .title .tap {
+    order: 2;
+  }
+
+  .kbd-hint {
+    display: none;
+  }
+
+  .pick {
+    gap: 3px;
+  }
+
+  .pick-label {
+    font-size: 10px;
+  }
+
+  .seg-opt {
+    min-width: 40px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .title .tap.art-btn {
+    --h: clamp(44px, 17vh, 84px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 205);
+  }
+
+  .menu-links {
+    display: contents;
+  }
+
+  .btn-howto,
+  .btn-settings {
+    --h: clamp(30px, 11vh, 52px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 140);
+  }
+
+  .btn-howto {
+    order: 1;
+  }
+
+  .btn-settings {
+    order: 3;
+  }
+
+  .swipe-hint {
+    width: 100px;
+    height: 100px;
+    padding: 12px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  /* Shared button sizing for pause, settings and match over. */
+  .btn {
+    min-width: 0;
+    width: 100%;
+    padding: 8px 14px;
+    font-size: 14px;
+    border-radius: 12px;
+  }
+
+  .btn[data-a='mute']::before,
+  .btn[data-a='fx']::before {
+    width: 20px;
+    height: 20px;
+  }
+
+  .panel {
+    min-width: 0;
+    padding: 12px 18px;
+    gap: 8px;
+  }
+
+  .btn-resume,
+  .btn-play-again {
+    --h: clamp(34px, 12vh, 56px);
+    height: var(--h);
+    width: calc(var(--h) * 397 / 110);
+  }
+
+  .btn-restart,
+  .btn-main-menu {
+    --h: clamp(30px, 11vh, 50px);
+    height: var(--h);
+    width: calc(var(--h) * 263 / 90);
+  }
+
+  .btn-mute,
+  .btn-fx,
+  .btn-controls {
+    --h: clamp(26px, 9vh, 44px);
+    height: var(--h);
+    width: calc(var(--h) * 520 / 111);
+  }
+
+  .btn-got-it,
+  .btn-done {
+    --h: clamp(30px, 11vh, 48px);
+    height: var(--h);
+    width: calc(var(--h) * 465 / 135);
+    margin-top: 0;
+  }
+
+  /* Pause: title across the top, actions on the left, toggles on the right. */
+  .overlay.dim:not(.match-over) > .panel {
+    display: grid;
+    grid-template-columns: auto minmax(180px, auto);
+    align-items: center;
+    justify-items: center;
+    gap: 8px 22px;
+  }
+
+  .overlay.dim:not(.match-over) > .panel > .logo {
+    grid-column: 1 / -1;
+    font-size: 28px !important;
+  }
+
+  .overlay.dim:not(.match-over) [data-a='resume'] { grid-area: 2 / 1; }
+  .overlay.dim:not(.match-over) [data-a='restart'] { grid-area: 3 / 1; }
+  .overlay.dim:not(.match-over) [data-a='menu'] { grid-area: 4 / 1; }
+  .overlay.dim:not(.match-over) [data-a='mute'] { grid-area: 2 / 2; }
+  .overlay.dim:not(.match-over) [data-a='fx'] { grid-area: 3 / 2; }
+  .overlay.dim:not(.match-over) [data-a='controls'] { grid-area: 4 / 2; }
+
+  /* Settings: sliders and DONE on the left, toggles on the right. */
+  [data-modal='settings'] .panel {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 1fr);
+    align-items: center;
+    justify-items: center;
+    gap: 8px 22px;
+    max-width: 640px;
+  }
+
+  [data-modal='settings'] .panel-title { grid-column: 1 / -1; }
+  [data-modal='settings'] .slider:nth-of-type(1) { grid-area: 2 / 1; }
+  [data-modal='settings'] .slider:nth-of-type(2) { grid-area: 3 / 1; }
+  [data-modal='settings'] [data-a='close'] { grid-area: 4 / 1 / span 2; }
+  [data-modal='settings'] [data-a='mute'] { grid-area: 2 / 2; }
+  [data-modal='settings'] [data-a='fx'] { grid-area: 3 / 2; }
+  [data-modal='settings'] [data-a='controls'] { grid-area: 4 / 2; }
+  [data-modal='settings'] [data-a='privacy'] { grid-area: 5 / 2; }
+
+  .slider input {
+    height: 24px;
+  }
+
+  /* How to play: art on the left, rules on the right (they scroll inside the panel if needed). */
+  [data-modal='howto'] .panel {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px 20px;
+    width: min(760px, 100%);
+    max-width: none;
+    height: 100%;
+  }
+
+  [data-modal='howto'] .panel-title { grid-area: 1 / 1 / 2 / -1; justify-self: center; }
+  [data-modal='howto'] .howto-art {
+    display: block;
+    grid-area: 2 / 1 / 4 / 2;
+    align-self: center;
+    max-height: 100%;
+    max-width: 34vw;
+  }
+  [data-modal='howto'] .howto-body { grid-area: 2 / 2; height: 100%; }
+  [data-modal='howto'] [data-a='close'] { grid-area: 3 / 2; justify-self: center; }
+
+  .howto-row {
+    grid-template-columns: 8em 1fr;
+  }
+
+  /* Match over: result on the left, actions on the right, along the bottom. */
+  .overlay.dim.match-over {
+    padding-bottom: calc(10px + var(--safe-bottom));
+  }
+
+  .overlay.dim.match-over > .panel {
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-auto-flow: row dense;
+    align-items: center;
+    justify-items: center;
+    gap: 4px 26px;
+  }
+
+  .match-over .result,
+  .match-over .best-rally,
+  .match-over .final,
+  .match-over .sub {
+    grid-column: 1;
+  }
+
+  .match-over .result {
+    font-size: 30px !important;
+  }
+
+  .match-over .final {
+    font-size: 28px;
+  }
+
+  .match-over .sub {
+    margin-bottom: 0;
+  }
+
+  .match-over .btn,
+  .match-over .art-btn {
+    grid-column: 2;
+  }
+
+  .match-over .btn.second-chance {
+    font-size: 13px;
+  }
 }

@@ -1,18 +1,39 @@
 import './ui/styles.css';
 import { GameManager } from './game/GameManager';
+import { initPlatform } from './platforms';
+import { ATHLETE_MODEL_URL, loadAthleteModel } from './render/AthleteModel';
 
-function boot(): void {
+async function boot(): Promise<void> {
   const bar = document.getElementById('loading-bar')!;
   const loading = document.getElementById('loading')!;
   const setProgress = (p: number) => (bar.style.width = `${Math.round(p * 100)}%`);
 
   try {
-    const game = new GameManager(document.getElementById('game-root')!, document.getElementById('ui-root')!, setProgress);
+    setProgress(0.1);
+    const platform = await initPlatform();
+    // Banner from the loading screen on (GameManager hides it once play starts).
+    if (platform.capabilities.banner) void platform.showBanner?.().catch(() => {});
+    setProgress(0.2);
+    const athleteModel = await loadAthleteModel(ATHLETE_MODEL_URL, (p) => setProgress(0.2 + p * 0.2)).catch((err) => {
+      console.warn('Player model failed to load; using primitive players.', err);
+      return null;
+    });
+    setProgress(0.4);
+
+    const game = new GameManager(
+      document.getElementById('game-root')!,
+      document.getElementById('ui-root')!,
+      (p: number) => setProgress(0.4 + p * 0.5),
+      athleteModel,
+    );
+    await game.init();
     setProgress(1);
+
     // Let the bar visibly finish, then reveal the title screen.
     setTimeout(() => {
       loading.classList.add('hidden');
       game.start();
+      platform.onGameReady?.();
     }, 250);
     if (import.meta.env.DEV) (window as unknown as { game: GameManager }).game = game;
   } catch (err) {
@@ -21,4 +42,12 @@ function boot(): void {
   }
 }
 
-boot();
+void boot();
+
+// Mobile browsers: lock to landscape where the API allows it (needs fullscreen on most; failures are fine).
+if (window.matchMedia?.('(pointer: coarse)').matches) {
+  const lock = () => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> })
+    .lock?.('landscape').catch(() => {});
+  lock();
+  window.addEventListener('pointerdown', lock, { once: true });
+}

@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
 
@@ -9,7 +13,13 @@ export function detectQuality(): GraphicsQuality {
   return cores >= 4 ? 'high' : 'medium';
 }
 
-/** Owns the WebGL renderer, scene, base lighting and resize handling. */
+/**
+ * Bloom on 'high' only. The threshold is on linear scene radiance, above lit diffuse surfaces, so
+ * only emissive and additive things glow: the ball rim, lamps, hit flashes, the tape flash.
+ */
+const BLOOM = { strength: 0.55, radius: 0.35, threshold: 0.95 };
+
+/** Owns the WebGL renderer, scene, base lighting, optional bloom and resize handling. */
 export class SceneManager {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
@@ -17,6 +27,7 @@ export class SceneManager {
   readonly sun: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
   private resizeListeners: ((w: number, h: number) => void)[] = [];
+  private composer: EffectComposer | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -63,7 +74,24 @@ export class SceneManager {
     this.sun.shadow.mapSize.set(size, size);
     this.sun.shadow.map?.dispose();
     this.sun.shadow.map = null;
+    this.setBloom(q === 'high');
     this.resize();
+  }
+
+  private setBloom(on: boolean): void {
+    if (!on) {
+      this.composer?.dispose();
+      this.composer = null;
+      return;
+    }
+    if (this.composer) return;
+    // Multisampled HDR target so the composited frame keeps its antialiasing.
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+    const c = new EffectComposer(this.renderer, rt);
+    c.addPass(new RenderPass(this.scene, this.camera));
+    c.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM.strength, BLOOM.radius, BLOOM.threshold));
+    c.addPass(new OutputPass()); // tone mapping + sRGB, which the renderer skips for render targets
+    this.composer = c;
   }
 
   onResize(fn: (w: number, h: number) => void): void {
@@ -85,10 +113,15 @@ export class SceneManager {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.composer) {
+      this.composer.setPixelRatio(this.renderer.getPixelRatio());
+      this.composer.setSize(w, h);
+    }
     for (const fn of this.resizeListeners) fn(w, h);
   };
 
   render(): void {
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
   }
 }
